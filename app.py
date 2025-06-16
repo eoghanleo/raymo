@@ -38,6 +38,10 @@ def get_session():
 
 session = get_session()
 
+
+SHOW_DEBUG_SIDEBAR = st.secrets.get("debug", {}).get("show_sidebar", False)
+
+
 # ——— Constants ———
 MODEL_NAME = 'SNOWFLAKE.MODELS."MIXTRAL-8X7B"'  # Primary model for content generation
 REFINE_MODEL = 'SNOWFLAKE.MODELS."MIXTRAL-8X7B"'    # Cheaper model for refinement
@@ -776,53 +780,54 @@ def main():
     if 'session_id' not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
     
-    # Sidebar configuration
-    with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        # Property switcher
-        if st.session_state.property_id:
-            if st.button("🔄 Switch Property", type="secondary"):
-                st.session_state.property_id = None
-                st.session_state.chat_history = []
-                st.session_state.session_id = str(uuid.uuid4())
-                st.rerun()
-        
-        # Configuration options
-        with st.expander("🔧 Advanced Settings", expanded=False):
-            st.session_state.config['enable_refinement'] = st.checkbox(
-                "Enable Response Refinement", 
-                st.session_state.config['enable_refinement'],
-                help="Use secondary model to refine long responses"
-            )
-            st.session_state.config['enable_caching'] = st.checkbox(
-                "Enable Query Caching", 
-                st.session_state.config['enable_caching'],
-                help="Cache embeddings and results for faster responses"
-            )
-            st.session_state.config['debug_mode'] = st.checkbox(
-                "Debug Mode",
-                st.session_state.config.get('debug_mode', False),
-                help="Show technical error details"
-            )
+# Sidebar configuration
+    if SHOW_DEBUG_SIDEBAR:
+        with st.sidebar:
+            st.header("⚙️ Configuration")
             
-            st.session_state.config['top_k'] = st.slider(
-                "Retrieved Chunks",
-                min_value=3,
-                max_value=10,
-                value=st.session_state.config['top_k'],
-                help="Number of context chunks to retrieve"
-            )
+            # Property switcher
+            if st.session_state.property_id:
+                if st.button("🔄 Switch Property", type="secondary"):
+                    st.session_state.property_id = None
+                    st.session_state.chat_history = []
+                    st.session_state.session_id = str(uuid.uuid4())
+                    st.rerun()
             
-            st.session_state.config['similarity_threshold'] = st.slider(
-                "Similarity Threshold",
-                min_value=0.1,
-                max_value=0.5,
-                value=st.session_state.config['similarity_threshold'],
-                step=0.05,
-                help="Minimum similarity score for semantic search"
-            )
-        
+            # Configuration options
+            with st.expander("🔧 Advanced Settings", expanded=False):
+                st.session_state.config['enable_refinement'] = st.checkbox(
+                    "Enable Response Refinement", 
+                    st.session_state.config['enable_refinement'],
+                    help="Use secondary model to refine long responses"
+                )
+                st.session_state.config['enable_caching'] = st.checkbox(
+                    "Enable Query Caching", 
+                    st.session_state.config['enable_caching'],
+                    help="Cache embeddings and results for faster responses"
+                )
+                st.session_state.config['debug_mode'] = st.checkbox(
+                    "Debug Mode",
+                    st.session_state.config.get('debug_mode', False),
+                    help="Show technical error details"
+                )
+                
+                st.session_state.config['top_k'] = st.slider(
+                    "Retrieved Chunks",
+                    min_value=3,
+                    max_value=10,
+                    value=st.session_state.config['top_k'],
+                    help="Number of context chunks to retrieve"
+                )
+                
+                st.session_state.config['similarity_threshold'] = st.slider(
+                    "Similarity Threshold",
+                    min_value=0.1,
+                    max_value=0.5,
+                    value=st.session_state.config['similarity_threshold'],
+                    step=0.05,
+                    help="Minimum similarity score for semantic search"
+                )
+            
         # Action buttons
         col1, col2 = st.columns(2)
         with col1:
@@ -975,7 +980,7 @@ def main():
         }
     
     # Enhanced debug info (only show if we have recent debug data)
-    if hasattr(st.session_state, 'last_debug_info') and st.session_state.last_debug_info:
+    if SHOW_DEBUG_SIDEBAR and hasattr(st.session_state, 'last_debug_info') and st.session_state.last_debug_info:
         debug_info = st.session_state.last_debug_info
         
         with st.sidebar:
@@ -1023,22 +1028,24 @@ def main():
                     st.markdown(f"**Total length:** {len(debug_info['full_prompt']):,} chars")
     
     # Real-time execution log
-    with st.sidebar.expander("📋 Execution Log", expanded=False):
-        if st.session_state.execution_log:
-            # Add search/filter capability
-            search_term = st.text_input("Filter logs", placeholder="Search...")
-            filtered_logs = [
-                log for log in st.session_state.execution_log 
-                if not search_term or search_term.lower() in log['step'].lower() or search_term.lower() in log['details'].lower()
-            ]
-            
-            for log_entry in reversed(filtered_logs[-20:]):  # Show last 20 entries, newest first
-                timing_info = f" ({log_entry['timing']})" if log_entry['timing'] else ""
-                st.markdown(f"**{log_entry['timestamp']}** {log_entry['step']}{timing_info}")
-                if log_entry['details']:
-                    st.markdown(f"  ↳ {log_entry['details']}")
-        else:
-            st.markdown("*No execution data yet. Ask a question to see the process!*")
+    # Real-time execution log
+    if SHOW_DEBUG_SIDEBAR:
+        with st.sidebar.expander("📋 Execution Log", expanded=False):
+            if st.session_state.execution_log:
+                # Add search/filter capability
+                search_term = st.text_input("Filter logs", placeholder="Search...")
+                filtered_logs = [
+                    log for log in st.session_state.execution_log 
+                    if not search_term or search_term.lower() in log['step'].lower() or search_term.lower() in log['details'].lower()
+                ]
+                
+                for log_entry in reversed(filtered_logs[-20:]):  # Show last 20 entries, newest first
+                    timing_info = f" ({log_entry['timing']})" if log_entry['timing'] else ""
+                    st.markdown(f"**{log_entry['timestamp']}** {log_entry['step']}{timing_info}")
+                    if log_entry['details']:
+                        st.markdown(f"  ↳ {log_entry['details']}")
+            else:
+                st.markdown("*No execution data yet. Ask a question to see the process!*")
 
 if __name__ == "__main__":
     main()
