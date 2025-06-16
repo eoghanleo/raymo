@@ -57,6 +57,27 @@ def get_pooled_session():
 # Update the session variable to use pooled version
 session = get_pooled_session()
 
+def optimize_warehouse():
+    """Optimize warehouse settings for better performance."""
+    try:
+        # Ensure warehouse is running
+        session.sql("ALTER WAREHOUSE CORTEX_WH RESUME IF SUSPENDED").collect()
+        
+        # Set optimal parameters
+        session.sql("ALTER SESSION SET USE_CACHED_RESULT = TRUE").collect()
+        session.sql("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 300").collect()
+        session.sql("ALTER SESSION SET QUERY_TAG = 'rag_app_optimized'").collect()
+        
+        # Pre-warm with a simple query
+        session.sql("SELECT 1").collect()
+        
+        log_execution("🚀 Warehouse Optimized", "Ready for queries")
+    except Exception as e:
+        log_execution("⚠️ Warehouse optimization failed", str(e))
+
+# Call this once at startup
+optimize_warehouse()
+
 
 SHOW_DEBUG_SIDEBAR = st.secrets.get("debug", {}).get("show_sidebar", False)
 
@@ -444,7 +465,7 @@ def execute_keyword_search(key_terms: str, property_id: int, top_k: int, is_appl
 
 # ——— Advanced Retrieval with Parallel Processing ———
 def retrieve_relevant_context(enriched_q: str, property_id: int, config: dict):
-    """Enhanced retrieval with weighted keyword search and parallel processing."""
+    """Simplified retrieval - focusing on speed."""
     try:
         # Check for exact matches first
         exact_matches = find_exact_matches(enriched_q[:50], property_id)
@@ -465,84 +486,106 @@ def retrieve_relevant_context(enriched_q: str, property_id: int, config: dict):
         
         log_execution("🔑 Query Analysis", f"Appliance query: {is_appliance_query}, Key terms: '{key_terms}'")
         
-        # Parallel execution of semantic and keyword searches
-        db_start = time.time()  # Keep timing for consistency
+        db_start = time.time()
         
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            # Submit both queries in parallel
-            if is_appliance_query:
-                semantic_future = executor.submit(
-                    execute_semantic_search,
-                    enriched_q, property_id, config['top_k']
-                )
-                keyword_future = executor.submit(
-                    execute_keyword_search,
-                    key_terms, property_id, config['top_k'], is_appliance=True
-                )
-            else:
-                semantic_future = executor.submit(
-                    execute_semantic_search,
-                    enriched_q, property_id, config['top_k']
-                )
-                keyword_future = executor.submit(
-                    execute_keyword_search,
-                    key_terms, property_id, 2, is_appliance=False
-                )
-            
-            # Wait for both to complete
-            semantic_results = semantic_future.result()
-            keyword_results = keyword_future.result()
+        # SINGLE optimized query instead of parallel execution
+        if is_appliance_query:
+            # Appliance-focused query
+            combined_sql = f"""
+            WITH combined_results AS (
+                -- Semantic search
+                SELECT
+                    CHUNK AS snippet,
+                    CHUNK_INDEX AS chunk_index,
+                    RELATIVE_PATH AS path,
+                    VECTOR_COSINE_SIMILARITY(
+                        EMBEDDINGS,
+                        {EMBED_FN}('{EMBED_MODEL}', ?)
+                    ) AS similarity,
+                    'semantic' AS search_type,
+                    0.3 AS weight_multiplier
+                FROM TEST_DB.CORTEX.RAW_TEXT
+                WHERE PROPERTY_ID = ?
+                
+                UNION ALL
+                
+                -- Keyword search with path priority
+                SELECT
+                    CHUNK AS snippet,
+                    CHUNK_INDEX AS chunk_index,
+                    RELATIVE_PATH AS path,
+                    CASE 
+                        WHEN CONTAINS(UPPER(RELATIVE_PATH), UPPER(?)) THEN 0.95
+                        WHEN CONTAINS(UPPER(CHUNK), UPPER(?)) THEN 0.8
+                        ELSE 0.6
+                    END AS similarity,
+                    'keyword' AS search_type,
+                    1.0 AS weight_multiplier
+                FROM TEST_DB.CORTEX.RAW_TEXT
+                WHERE PROPERTY_ID = ?
+                    AND (
+                        CONTAINS(UPPER(CHUNK), UPPER(?)) OR
+                        CONTAINS(UPPER(RELATIVE_PATH), UPPER(?))
+                    )
+            )
+            SELECT 
+                snippet, chunk_index, path, similarity, search_type,
+                (similarity * weight_multiplier) AS weighted_score
+            FROM combined_results
+            ORDER BY weighted_score DESC
+            LIMIT ?
+            """
+            params = [enriched_q, property_id, key_terms, key_terms, property_id, key_terms, key_terms, config['top_k']]
+        else:
+            # General query - simpler and faster
+            combined_sql = f"""
+            SELECT
+                CHUNK AS snippet,
+                CHUNK_INDEX AS chunk_index,
+                RELATIVE_PATH AS path,
+                VECTOR_COSINE_SIMILARITY(
+                    EMBEDDINGS,
+                    {EMBED_FN}('{EMBED_MODEL}', ?)
+                ) AS similarity,
+                'semantic' AS search_type
+            FROM TEST_DB.CORTEX.RAW_TEXT
+            WHERE PROPERTY_ID = ?
+            ORDER BY similarity DESC
+            LIMIT ?
+            """
+            params = [enriched_q, property_id, config['top_k']]
         
-        # Combine results
-        all_results = []
-        
-        for row in semantic_results:
-            all_results.append({
-                'snippet': row['SNIPPET'],
-                'chunk_index': row['CHUNK_INDEX'],
-                'path': row['PATH'],
-                'similarity': row['SIMILARITY'],
-                'search_type': 'semantic',
-                'weighted_score': row['SIMILARITY'] * 1.0
-            })
-        
-        for row in keyword_results:
-            all_results.append({
-                'snippet': row['SNIPPET'],
-                'chunk_index': row['CHUNK_INDEX'],
-                'path': row['PATH'],
-                'similarity': row['SIMILARITY'],
-                'search_type': 'keyword',
-                'weighted_score': row['SIMILARITY'] * 0.7
-            })
-        
-        # Sort by weighted score
-        all_results.sort(key=lambda x: x['weighted_score'], reverse=True)
-        
-        # Filter by threshold and search type
-        filtered_results = [
-            r for r in all_results
-            if (r['search_type'] == 'keyword' and r['similarity'] >= 0.5) or 
-               (r['search_type'] == 'semantic' and r['similarity'] >= config['similarity_threshold'])
-        ][:config['top_k']]
-        
-        if not filtered_results:
-            filtered_results = all_results[:3] if all_results else []
-            log_execution("⚠️ Fallback Applied", "No results above threshold, using top 3")
-        
-        # Ensure we only return top 3
-        filtered_results = filtered_results[:3]
+        # Single query execution
+        df = session.sql(combined_sql, params=params).collect()
         
         db_time = time.time() - db_start
-        log_execution("🗄️ Database Query", f"Retrieved {len(filtered_results)} chunks", db_time)
+        log_execution("🗄️ Database Query", f"Retrieved {len(df)} chunks", db_time)
         monitor.log_cache_miss()
         
-        # Extract the return values
-        snippets = [row['snippet'] for row in filtered_results]
-        chunk_idxs = [row['chunk_index'] for row in filtered_results]
-        paths = [row['path'] for row in filtered_results]
-        similarities = [row['similarity'] for row in filtered_results]
-        search_types = [row['search_type'] for row in filtered_results]
+        # Process results
+        if not df:
+            log_execution("⚠️ No Results", "Returning empty")
+            return [], [], [], [], []
+        
+        # For general queries, filter by threshold
+        if not is_appliance_query:
+            filtered_results = [
+                row for row in df 
+                if row['SIMILARITY'] >= config['similarity_threshold']
+            ][:3]
+        else:
+            filtered_results = df[:3]
+        
+        if not filtered_results:
+            filtered_results = df[:3] if df else []
+            log_execution("⚠️ Fallback Applied", "No results above threshold, using top 3")
+        
+        # Extract return values
+        snippets = [row['SNIPPET'] for row in filtered_results]
+        chunk_idxs = [row['CHUNK_INDEX'] for row in filtered_results]
+        paths = [row['PATH'] for row in filtered_results]
+        similarities = [row['SIMILARITY'] for row in filtered_results]
+        search_types = [row['SEARCH_TYPE'] for row in filtered_results]
         
         total_time = time.time() - start_time
         log_execution("✅ Retrieval Complete", f"Found {len(snippets)} relevant chunks", total_time)
