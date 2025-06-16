@@ -9,9 +9,6 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Any
-from snowflake.connector import pooling
-from contextlib import contextmanager
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ——— App config ———
 st.set_page_config(
@@ -40,43 +37,6 @@ def get_session():
     return session
 
 session = get_session()
-
-# ——— Connection Pool Configuration ———
-@st.cache_resource
-def get_pooled_session():
-    """Get a pooled session for better performance."""
-    session = get_active_session()
-    
-    # Configure session for optimal performance
-    session.sql("ALTER SESSION SET USE_CACHED_RESULT = TRUE").collect()
-    session.sql("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 300").collect()
-    session.sql("ALTER SESSION SET QUERY_TAG = 'rag_app_main'").collect()
-    
-    return session
-
-# Update the session variable to use pooled version
-session = get_pooled_session()
-
-def optimize_warehouse():
-    """Optimize warehouse settings for better performance."""
-    try:
-        # Ensure warehouse is running
-        session.sql("ALTER WAREHOUSE CORTEX_WH RESUME IF SUSPENDED").collect()
-        
-        # Set optimal parameters
-        session.sql("ALTER SESSION SET USE_CACHED_RESULT = TRUE").collect()
-        session.sql("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 300").collect()
-        session.sql("ALTER SESSION SET QUERY_TAG = 'rag_app_optimized'").collect()
-        
-        # Pre-warm with a simple query
-        session.sql("SELECT 1").collect()
-        
-        log_execution("🚀 Warehouse Optimized", "Ready for queries")
-    except Exception as e:
-        log_execution("⚠️ Warehouse optimization failed", str(e))
-
-# Call this once at startup
-optimize_warehouse()
 
 
 SHOW_DEBUG_SIDEBAR = st.secrets.get("debug", {}).get("show_sidebar", False)
@@ -401,71 +361,10 @@ def find_exact_matches(query: str, property_id: int) -> List[Dict]:
                 'match_type': row['MATCH_TYPE']} for row in df]
     except Exception:
         return []
-# ——— Helper functions for parallel search ———
-def execute_semantic_search(query: str, property_id: int, top_k: int):
-    """Execute semantic search."""
-    semantic_sql = f"""
-    SELECT
-        r.CHUNK AS snippet,
-        r.CHUNK_INDEX AS chunk_index,
-        r.RELATIVE_PATH AS path,
-        VECTOR_COSINE_SIMILARITY(
-            r.EMBEDDINGS,
-            {EMBED_FN}('{EMBED_MODEL}', ?)
-        ) AS similarity,
-        'semantic' AS search_type
-    FROM TEST_DB.CORTEX.RAW_TEXT r
-    WHERE PROPERTY_ID = ?
-    ORDER BY similarity DESC
-    LIMIT ?
-    """
-    
-    return session.sql(semantic_sql, params=[query, property_id, top_k]).collect()
-
-def execute_keyword_search(key_terms: str, property_id: int, top_k: int, is_appliance: bool = False):
-    """Execute keyword search."""
-    if is_appliance:
-        keyword_sql = """
-        SELECT
-            r.CHUNK AS snippet,
-            r.CHUNK_INDEX AS chunk_index,
-            r.RELATIVE_PATH AS path,
-            CASE 
-                WHEN CONTAINS(UPPER(r.RELATIVE_PATH), UPPER(?)) THEN 0.95
-                WHEN CONTAINS(UPPER(r.CHUNK), UPPER(?)) THEN 0.8
-                ELSE 0.6
-            END AS similarity,
-            'keyword' AS search_type
-        FROM TEST_DB.CORTEX.RAW_TEXT r
-        WHERE PROPERTY_ID = ?
-            AND (
-                CONTAINS(UPPER(r.CHUNK), UPPER(?)) OR
-                CONTAINS(UPPER(r.RELATIVE_PATH), UPPER(?))
-            )
-        LIMIT ?
-        """
-        params = [key_terms, key_terms, property_id, key_terms, key_terms, top_k]
-    else:
-        keyword_sql = """
-        SELECT
-            r.CHUNK AS snippet,
-            r.CHUNK_INDEX AS chunk_index,
-            r.RELATIVE_PATH AS path,
-            0.6 AS similarity,
-            'keyword' AS search_type
-        FROM TEST_DB.CORTEX.RAW_TEXT r
-        WHERE PROPERTY_ID = ?
-            AND CONTAINS(UPPER(r.CHUNK), UPPER(?))
-        LIMIT ?
-        """
-        params = [property_id, key_terms, top_k]
-    
-    return session.sql(keyword_sql, params=params).collect()
-
 
 # ——— Advanced Retrieval with Parallel Processing ———
 def retrieve_relevant_context(enriched_q: str, property_id: int, config: dict):
-    """Simplified retrieval - focusing on speed."""
+    """Enhanced retrieval with weighted keyword search and parallel processing."""
     try:
         # Check for exact matches first
         exact_matches = find_exact_matches(enriched_q[:50], property_id)
@@ -486,101 +385,138 @@ def retrieve_relevant_context(enriched_q: str, property_id: int, config: dict):
         
         log_execution("🔑 Query Analysis", f"Appliance query: {is_appliance_query}, Key terms: '{key_terms}'")
         
-        db_start = time.time()
-        
-        # SINGLE optimized query instead of parallel execution
         if is_appliance_query:
-            # Appliance-focused query
-            combined_sql = f"""
-            WITH combined_results AS (
-                -- Semantic search
-                SELECT
-                    CHUNK AS snippet,
-                    CHUNK_INDEX AS chunk_index,
-                    RELATIVE_PATH AS path,
-                    VECTOR_COSINE_SIMILARITY(
-                        EMBEDDINGS,
-                        {EMBED_FN}('{EMBED_MODEL}', ?)
-                    ) AS similarity,
-                    'semantic' AS search_type,
-                    0.3 AS weight_multiplier
-                FROM TEST_DB.CORTEX.RAW_TEXT
-                WHERE PROPERTY_ID = ?
-                
-                UNION ALL
-                
-                -- Keyword search with path priority
-                SELECT
-                    CHUNK AS snippet,
-                    CHUNK_INDEX AS chunk_index,
-                    RELATIVE_PATH AS path,
-                    CASE 
-                        WHEN CONTAINS(UPPER(RELATIVE_PATH), UPPER(?)) THEN 0.95
-                        WHEN CONTAINS(UPPER(CHUNK), UPPER(?)) THEN 0.8
-                        ELSE 0.6
-                    END AS similarity,
-                    'keyword' AS search_type,
-                    1.0 AS weight_multiplier
-                FROM TEST_DB.CORTEX.RAW_TEXT
-                WHERE PROPERTY_ID = ?
-                    AND (
-                        CONTAINS(UPPER(CHUNK), UPPER(?)) OR
-                        CONTAINS(UPPER(RELATIVE_PATH), UPPER(?))
-                    )
+            log_execution("🏠 Using Appliance Strategy", "Keyword-weighted search with filename prioritization")
+            semantic_sql = f"""
+            WITH semantic_results AS (
+              SELECT
+                r.CHUNK AS snippet,
+                r.CHUNK_INDEX AS chunk_index,
+                r.RELATIVE_PATH AS path,
+                VECTOR_COSINE_SIMILARITY(
+                  r.EMBEDDINGS,
+                  {EMBED_FN}('{EMBED_MODEL}', ?)
+                ) AS similarity,
+                'semantic' AS search_type,
+                0.3 AS weight_multiplier
+              FROM TEST_DB.CORTEX.RAW_TEXT r
+              WHERE PROPERTY_ID = ?
+              ORDER BY similarity DESC
+              LIMIT ?
+            ),
+            keyword_results AS (
+              SELECT
+                r.CHUNK AS snippet,
+                r.CHUNK_INDEX AS chunk_index,
+                r.RELATIVE_PATH AS path,
+                CASE 
+                  WHEN CONTAINS(UPPER(r.RELATIVE_PATH), UPPER(?)) THEN 0.95
+                  WHEN CONTAINS(UPPER(r.CHUNK), UPPER(?)) THEN 0.8
+                  ELSE 0.6
+                END AS similarity,
+                'keyword' AS search_type,
+                1.0 AS weight_multiplier
+              FROM TEST_DB.CORTEX.RAW_TEXT r
+              WHERE PROPERTY_ID = ?
+                AND (
+                  CONTAINS(UPPER(r.CHUNK), UPPER(?)) OR
+                  CONTAINS(UPPER(r.RELATIVE_PATH), UPPER(?))
+                )
+              LIMIT ?
+            ),
+            combined_results AS (
+              SELECT *, (similarity * weight_multiplier) AS weighted_score FROM semantic_results
+              UNION ALL
+              SELECT *, (similarity * weight_multiplier) AS weighted_score FROM keyword_results
             )
             SELECT 
-                snippet, chunk_index, path, similarity, search_type,
-                (similarity * weight_multiplier) AS weighted_score
+              snippet, chunk_index, path, similarity, search_type,
+              weighted_score
             FROM combined_results
             ORDER BY weighted_score DESC
             LIMIT ?
             """
-            params = [enriched_q, property_id, key_terms, key_terms, property_id, key_terms, key_terms, config['top_k']]
+            
+            params = [
+                enriched_q, property_id, config['top_k'],
+                key_terms, key_terms,
+                property_id, key_terms, key_terms,
+                config['top_k'],
+                config['top_k']
+            ]
         else:
-            # General query - simpler and faster
-            combined_sql = f"""
-            SELECT
-                CHUNK AS snippet,
-                CHUNK_INDEX AS chunk_index,
-                RELATIVE_PATH AS path,
+            log_execution("📄 Using General Strategy", "Balanced semantic + keyword search")
+            semantic_sql = f"""
+            WITH semantic_results AS (
+              SELECT
+                r.CHUNK AS snippet,
+                r.CHUNK_INDEX AS chunk_index,
+                r.RELATIVE_PATH AS path,
                 VECTOR_COSINE_SIMILARITY(
-                    EMBEDDINGS,
-                    {EMBED_FN}('{EMBED_MODEL}', ?)
+                  r.EMBEDDINGS,
+                  {EMBED_FN}('{EMBED_MODEL}', ?)
                 ) AS similarity,
-                'semantic' AS search_type
-            FROM TEST_DB.CORTEX.RAW_TEXT
-            WHERE PROPERTY_ID = ?
-            ORDER BY similarity DESC
+                'semantic' AS search_type,
+                1.0 AS weight_multiplier
+              FROM TEST_DB.CORTEX.RAW_TEXT r
+              WHERE PROPERTY_ID = ?
+              ORDER BY similarity DESC
+              LIMIT ?
+            ),
+            keyword_results AS (
+              SELECT
+                r.CHUNK AS snippet,
+                r.CHUNK_INDEX AS chunk_index,
+                r.RELATIVE_PATH AS path,
+                0.6 AS similarity,
+                'keyword' AS search_type,
+                0.7 AS weight_multiplier
+              FROM TEST_DB.CORTEX.RAW_TEXT r
+              WHERE PROPERTY_ID = ?
+                AND (
+                  CONTAINS(UPPER(r.CHUNK), UPPER(?)) OR
+                  CONTAINS(UPPER(r.RELATIVE_PATH), UPPER(?))
+                )
+              LIMIT 2
+            ),
+            combined_results AS (
+              SELECT *, (similarity * weight_multiplier) AS weighted_score FROM semantic_results
+              UNION ALL
+              SELECT *, (similarity * weight_multiplier) AS weighted_score FROM keyword_results
+            )
+            SELECT 
+              snippet, chunk_index, path, similarity, search_type,
+              weighted_score
+            FROM combined_results
+            ORDER BY weighted_score DESC
             LIMIT ?
             """
-            params = [enriched_q, property_id, config['top_k']]
+            
+            params = [
+                enriched_q, property_id, config['top_k'],
+                property_id, key_terms, key_terms,
+                config['top_k']
+            ]
         
-        # Single query execution
-        df = session.sql(combined_sql, params=params).collect()
-        
+        db_start = time.time()
+        df = session.sql(semantic_sql, params=params).collect()
         db_time = time.time() - db_start
+        
         log_execution("🗄️ Database Query", f"Retrieved {len(df)} chunks", db_time)
         monitor.log_cache_miss()
         
-        # Process results
-        if not df:
-            log_execution("⚠️ No Results", "Returning empty")
-            return [], [], [], [], []
-        
-        # For general queries, filter by threshold
-        if not is_appliance_query:
-            filtered_results = [
-                row for row in df 
-                if row['SIMILARITY'] >= config['similarity_threshold']
-            ][:3]
-        else:
-            filtered_results = df[:3]
+        filtered_results = [
+            row for row in df 
+            if (row['SEARCH_TYPE'] == 'keyword' and row['SIMILARITY'] >= 0.5) or 
+               (row['SEARCH_TYPE'] == 'semantic' and row['SIMILARITY'] >= config['similarity_threshold'])
+        ]
         
         if not filtered_results:
             filtered_results = df[:3] if df else []
             log_execution("⚠️ Fallback Applied", "No results above threshold, using top 3")
         
-        # Extract return values
+        filtered_results = filtered_results[:3]
+        
         snippets = [row['SNIPPET'] for row in filtered_results]
         chunk_idxs = [row['CHUNK_INDEX'] for row in filtered_results]
         paths = [row['PATH'] for row in filtered_results]
