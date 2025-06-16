@@ -40,9 +40,9 @@ def get_session():
 session = get_session()
 
 # ——— Constants ———
-MODEL_NAME = 'SNOWFLAKE.CORTEX.COMPLETE'
-REFINE_MODEL = 'SNOWFLAKE.CORTEX.COMPLETE'
-EMBED_MODEL = 'snowflake-arctic-embed-l-v2.0'
+MODEL_NAME = 'MIXTRAL-8X7B'  # The actual model
+REFINE_MODEL = 'MIXTRAL-8X7B'  # Same model for refinement
+EMBED_MODEL = 'SNOWFLAKE-ARCTIC-EMBED-L-V2.0'
 EMBED_FN = 'SNOWFLAKE.CORTEX.EMBED_TEXT_1024'
 WORD_THRESHOLD = 100  # Increased from 50 to 100
 TOP_K = 5  # Fixed value, no longer configurable
