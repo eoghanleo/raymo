@@ -186,20 +186,44 @@ EDITOR_PROMPT = json.dumps({
     ]
 })
 
-# ——— Simple Conversation Logging to Snowflake ———
+# ——— Enhanced Conversation Logging to Snowflake ———
 def log_turn(role: str, message: str, metadata: dict = None):
-    """Log conversation turns to Snowflake table."""
+    """Log conversation turns to Snowflake table with all metrics."""
     if not st.session_state.config['enable_logging']:
         return
     
     try:
-        # Prepare data for logging
+        # Prepare comprehensive data for logging
         conversation_data = {
             "role": role,
             "message": message,
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "metadata": metadata or {}
         }
+        
+        # Add execution log if it's an assistant response with metrics
+        if role == "assistant" and metadata:
+            # Get execution steps for this response
+            execution_steps = []
+            for log_entry in st.session_state.execution_log:
+                if log_entry['timing']:  # Only include timed steps
+                    execution_steps.append({
+                        "step": log_entry['step'],
+                        "timing": log_entry['timing'],
+                        "details": log_entry['details']
+                    })
+            
+            # Add performance breakdown to metadata
+            conversation_data["metadata"]["execution_log"] = execution_steps
+            conversation_data["metadata"]["performance_summary"] = {
+                "total_latency": metadata.get("latency", 0),
+                "retrieval_time": metadata.get("retrieval_time", 0),
+                "llm_time": metadata.get("latency", 0) - metadata.get("retrieval_time", 0),
+                "sources_used": metadata.get("sources_used", 0),
+                "refinement_used": metadata.get("used_refinement", False),
+                "word_count_original": metadata.get("original_word_count", 0),
+                "word_count_final": metadata.get("final_word_count", 0)
+            }
         
         # Insert into Snowflake
         insert_sql = """
@@ -213,7 +237,7 @@ def log_turn(role: str, message: str, metadata: dict = None):
         VALUES (
             ?,                           -- id (UUID)
             CURRENT_TIMESTAMP(),         -- created_at
-            PARSE_JSON(?),              -- conversation (JSON)
+            PARSE_JSON(?),              -- conversation (JSON with all metrics)
             ?,                          -- property_id
             ?                           -- session_id
         )
@@ -221,7 +245,7 @@ def log_turn(role: str, message: str, metadata: dict = None):
         
         session.sql(insert_sql, params=[
             str(uuid.uuid4()),                              # Unique ID
-            json.dumps(conversation_data),                  # Conversation data as JSON
+            json.dumps(conversation_data),                  # Conversation data with metrics
             st.session_state.get('property_id'),           # Property ID
             st.session_state.get('session_id')             # Session ID
         ]).collect()
@@ -371,8 +395,11 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         
         if st.session_state.config['enable_refinement'] and word_count > WORD_THRESHOLD:
             log_execution("✂️ Starting Refinement", f"Words: {word_count} > threshold: {WORD_THRESHOLD}")
+            refine_start = time.time()
             used_refinement = True
             final_response = refine_response(initial_response, raw_question)
+            refine_time = time.time() - refine_start
+            log_execution("✅ Refinement Complete", f"Final: {len(final_response.split())} words", refine_time)
         
         return (enriched_q, final_response, snippets, chunk_idxs, paths, 
                 similarities, search_types, used_refinement, word_count, retrieval_time)
@@ -398,7 +425,6 @@ def refine_response(original_response: str, original_question: str) -> str:
         ).collect()
         
         refined = df[0].RESPONSE.strip() if df else original_response
-        log_execution("✅ Refinement Complete", f"Final: {len(refined.split())} words")
         return refined
         
     except Exception as e:
@@ -478,6 +504,33 @@ def main():
                 st.metric("Total Requests", metrics['total_requests'])
                 if metrics['recent_errors'] > 0:
                     st.warning(f"⚠️ {metrics['recent_errors']} recent errors")
+        
+        # Execution log - always visible for performance debugging
+        with st.expander("📋 Execution Log", expanded=False):
+            if st.session_state.execution_log:
+                # Add search/filter capability
+                search_term = st.text_input("Filter logs", placeholder="Search...", key="log_search")
+                filtered_logs = [
+                    log for log in st.session_state.execution_log 
+                    if not search_term or search_term.lower() in log['step'].lower() or search_term.lower() in log['details'].lower()
+                ]
+                
+                # Show last 20 entries, newest first
+                for log_entry in reversed(filtered_logs[-20:]):
+                    timing_info = f" ({log_entry['timing']})" if log_entry['timing'] else ""
+                    st.markdown(f"**{log_entry['timestamp']}** {log_entry['step']}{timing_info}")
+                    if log_entry['details']:
+                        st.markdown(f"  ↳ {log_entry['details']}")
+                
+                # Summary stats at the bottom
+                if filtered_logs:
+                    st.divider()
+                    total_steps = len(filtered_logs)
+                    timed_steps = [float(log['timing'][:-1]) for log in filtered_logs if log['timing']]
+                    if timed_steps:
+                        st.caption(f"Steps: {total_steps} | Total time: {sum(timed_steps):.3f}s")
+            else:
+                st.markdown("*No execution data yet. Ask a question to see the process!*")
     
     # Property selection
     if st.session_state.property_id is None:
@@ -555,14 +608,15 @@ def main():
         # Add to history
         st.session_state.chat_history.append({"role": "assistant", "content": answer})
         
-        # Log metrics
+        # Log metrics with all performance data
         metrics = {
             "latency": latency,
             "retrieval_time": retrieval_time,
             "sources_used": len(snippets),
             "used_refinement": used_refinement,
             "original_word_count": original_word_count if 'original_word_count' in locals() else 0,
-            "final_word_count": len(answer.split())
+            "final_word_count": len(answer.split()),
+            "sources": [{"path": p, "similarity": s, "type": t} for p, s, t in zip(paths, similarities, search_types)] if snippets else []
         }
         log_turn("assistant", answer, metrics)
         monitor.log_request(metrics)
@@ -596,18 +650,6 @@ def main():
                     debug.get('search_types', [])
                 ), 1):
                     st.text(f"{i}. {stype} (score: {sim:.3f})")
-    
-    # Execution log
-    if st.session_state.config.get('debug_mode'):
-        with st.sidebar.expander("📋 Execution Log", expanded=False):
-            if st.session_state.execution_log:
-                for log_entry in reversed(st.session_state.execution_log[-20:]):
-                    timing_info = f" ({log_entry['timing']})" if log_entry['timing'] else ""
-                    st.markdown(f"**{log_entry['timestamp']}** {log_entry['step']}{timing_info}")
-                    if log_entry['details']:
-                        st.markdown(f"  ↳ {log_entry['details']}")
-            else:
-                st.markdown("*No execution data yet*")
 
 if __name__ == "__main__":
     main()
