@@ -330,25 +330,9 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
         # Execute the query with parameters
         params = (enriched_q, property_id, property_id, keyword_json)
         results = session.sql(hybrid_sql, params).collect()
-        
-        # Parse results
-        snippets = []
-        chunk_idxs = []
-        paths = []
-        similarities = []
-        search_types = []
-        
-        for row in results:
-            snippets.append(row.SNIPPET)
-            chunk_idxs.append(row.CHUNK_INDEX)
-            paths.append(row.PATH)
-            similarities.append(row.SIMILARITY)
-            search_types.append(row.SEARCH_TYPE)
-        
-        retrieval_time = time.time() - start_time
-        log_execution("✅ Retrieval complete", f"{len(results)} results in {retrieval_time:.2f}s")
-        
-        return snippets, chunk_idxs, paths, similarities, search_types, retrieval_time
+
+        log_execution("✅ Retrieval complete", f"{len(results)} results in {time.time() - start_time:.2f}s")
+        return results
 
     except Exception as e:
         log_execution("❌ Retrieval error", str(e))
@@ -363,9 +347,23 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         enriched_q = process_question(raw_question, property_id, chat_history)
         
         # Retrieve context
-        snippets, chunk_idxs, paths, similarities, search_types, retrieval_time = retrieve_relevant_context(
-            enriched_q, property_id
-        )
+        retrieval_start = time.time()
+        results = retrieve_relevant_context(enriched_q, property_id)
+        retrieval_time = time.time() - retrieval_start
+        
+        # Parse results
+        snippets = []
+        chunk_idxs = []
+        paths = []
+        similarities = []
+        search_types = []
+        
+        for row in results:
+            snippets.append(row.SNIPPET)
+            chunk_idxs.append(row.CHUNK_INDEX)
+            paths.append(row.PATH)
+            similarities.append(row.SIMILARITY)
+            search_types.append(row.SEARCH_TYPE)
         
         if not snippets:
             fallback = "I don't have specific information about that. Please contact your host for assistance."
