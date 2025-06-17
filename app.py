@@ -330,13 +330,29 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
         # Execute the query with parameters
         params = (enriched_q, property_id, property_id, keyword_json)
         results = session.sql(hybrid_sql, params).collect()
-
-        log_execution("✅ Retrieval complete", f"{len(results)} results in {time.time() - start_time:.2f}s")
-        return results
+        
+        # Parse results
+        snippets = []
+        chunk_idxs = []
+        paths = []
+        similarities = []
+        search_types = []
+        
+        for row in results:
+            snippets.append(row.SNIPPET)
+            chunk_idxs.append(row.CHUNK_INDEX)
+            paths.append(row.PATH)
+            similarities.append(row.SIMILARITY)
+            search_types.append(row.SEARCH_TYPE)
+        
+        retrieval_time = time.time() - start_time
+        log_execution("✅ Retrieval complete", f"{len(results)} results in {retrieval_time:.2f}s")
+        
+        return snippets, chunk_idxs, paths, similarities, search_types, retrieval_time
 
     except Exception as e:
         log_execution("❌ Retrieval error", str(e))
-        return []
+        return [], [], [], [], [], 0
 
 # ——— Answer Generation ———
 def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int):
@@ -622,26 +638,71 @@ def main():
                 "paths": paths,
                 "similarities": similarities,
                 "search_types": search_types,
-                "used_refinement": used_refinement
+                "used_refinement": used_refinement,
+                "enriched_query": enriched_q,
+                "raw_query": raw_q
             }
     
-    # Debug info
+    # Debug info with retrieved chunks
     if st.session_state.config.get('debug_mode') and hasattr(st.session_state, 'last_debug_info'):
-        with st.sidebar.expander("🔍 Last Query Debug", expanded=False):
+        with st.sidebar.expander("🔍 Last Query Debug", expanded=True):
             debug = st.session_state.last_debug_info
+            
+            # Query info
+            st.markdown("### Query Analysis")
+            st.markdown(f"**Original:** {debug.get('raw_query', 'N/A')}")
+            st.markdown(f"**Enriched:** {debug.get('enriched_query', 'N/A')}")
+            
+            # Performance summary
+            st.markdown("### Performance")
             st.markdown(f"**Total time:** {debug['latency']:.2f}s")
             st.markdown(f"**Retrieval time:** {debug['retrieval_time']:.2f}s")
-            st.markdown(f"**Sources found:** {len(debug.get('snippets', []))}")
+            st.markdown(f"**LLM time:** {debug['latency'] - debug['retrieval_time']:.2f}s")
             st.markdown(f"**Refinement used:** {'Yes' if debug['used_refinement'] else 'No'}")
             
+            # Retrieved chunks detail
+            st.markdown("### Retrieved Chunks")
+            st.markdown(f"**Total chunks found:** {len(debug.get('snippets', []))}")
+            
             if debug.get('snippets'):
-                st.markdown("**Sources:**")
-                for i, (path, sim, stype) in enumerate(zip(
+                for i, (snippet, path, sim, stype, idx) in enumerate(zip(
+                    debug.get('snippets', []),
                     debug.get('paths', []),
                     debug.get('similarities', []),
-                    debug.get('search_types', [])
+                    debug.get('search_types', []),
+                    debug.get('chunk_idxs', range(len(debug.get('snippets', []))))
                 ), 1):
-                    st.text(f"{i}. {stype} (score: {sim:.3f})")
+                    with st.expander(f"Chunk {i}: {stype.upper()} (Score: {sim:.3f})", expanded=True):
+                        # Chunk metadata
+                        st.caption(f"📄 Source: {path}")
+                        st.caption(f"📍 Chunk Index: {idx}")
+                        st.caption(f"🔍 Type: {stype}")
+                        st.caption(f"📊 Similarity Score: {sim:.3f}")
+                        
+                        # Why was it retrieved?
+                        if stype == 'semantic':
+                            st.info(f"✨ Retrieved via semantic similarity (cosine similarity: {sim:.3f})")
+                        else:
+                            st.info(f"🔤 Retrieved via keyword match (fixed score: {sim:.3f})")
+                        
+                        # Chunk content
+                        st.markdown("**Content:**")
+                        st.text_area(f"chunk_{i}_content", snippet, height=150, disabled=True, label_visibility="collapsed")
+                        
+                        # Additional insights
+                        word_count = len(snippet.split())
+                        st.caption(f"📏 Length: {word_count} words, {len(snippet)} characters")
+                
+                # Show keywords used for keyword search
+                if any(st == 'keyword' for st in debug.get('search_types', [])):
+                    st.divider()
+                    st.markdown("### Keyword Extraction")
+                    # Extract keywords from enriched query
+                    tokens = re.findall(r'\b\w{4,}\b', debug.get('enriched_query', '').lower())
+                    keywords = list(dict.fromkeys(tokens))[:5]
+                    st.markdown(f"**Keywords used:** {', '.join(keywords)}")
+            else:
+                st.warning("No chunks retrieved for this query")
 
 if __name__ == "__main__":
     main()
