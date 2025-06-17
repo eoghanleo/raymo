@@ -691,26 +691,35 @@ def main():
                     stype = debug.get('search_types', ['unknown'])[i-1] if i-1 < len(debug.get('search_types', [])) else 'unknown'
                     idx = debug.get('chunk_idxs', [0])[i-1] if i-1 < len(debug.get('chunk_idxs', [])) else 0
                     
-                    with st.expander(f"📄 Chunk {i}: {stype.upper()} (Score: {sim:.3f})", expanded=True):
-                        # Chunk metadata
+                    # Chunk header with colored background
+                    st.markdown(f"#### 📄 Chunk {i}: {stype.upper()}")
+                    
+                    # Chunk metadata in columns
+                    col1, col2 = st.columns(2)
+                    with col1:
                         st.caption(f"📂 Source: {path}")
-                        st.caption(f"📍 Chunk Index: {idx}")
+                        st.caption(f"📍 Index: {idx}")
+                    with col2:
+                        st.caption(f"📊 Score: {sim:.3f}")
                         st.caption(f"🔍 Type: {stype}")
-                        st.caption(f"📊 Similarity Score: {sim:.3f}")
-                        
-                        # Why was it retrieved?
-                        if stype == 'semantic':
-                            st.info(f"✨ Retrieved via semantic similarity (cosine similarity: {sim:.3f})")
-                        else:
-                            st.info(f"🔤 Retrieved via keyword match (fixed score: {sim:.3f})")
-                        
-                        # Chunk content
-                        st.markdown("**Content:**")
-                        st.text_area(f"chunk_{i}_content", snippet, height=150, disabled=True, label_visibility="collapsed")
-                        
-                        # Additional insights
-                        word_count = len(snippet.split())
-                        st.caption(f"📏 Length: {word_count} words, {len(snippet)} characters")
+                    
+                    # Why was it retrieved?
+                    if stype == 'semantic':
+                        st.info(f"✨ Retrieved via semantic similarity (cosine similarity: {sim:.3f})")
+                    else:
+                        st.info(f"🔤 Retrieved via keyword match (fixed score: {sim:.3f})")
+                    
+                    # Chunk content
+                    st.markdown("**Content:**")
+                    st.text_area(f"chunk_{i}_content", snippet, height=150, disabled=True, label_visibility="collapsed")
+                    
+                    # Additional insights
+                    word_count = len(snippet.split())
+                    st.caption(f"📏 Length: {word_count} words, {len(snippet)} characters")
+                    
+                    # Separator between chunks
+                    if i < len(debug.get('snippets', [])):
+                        st.divider()
                 
                 # Show keywords used for keyword search
                 if any(st == 'keyword' for st in debug.get('search_types', [])):
