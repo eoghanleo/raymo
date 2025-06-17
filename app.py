@@ -313,7 +313,7 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                 FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) kw
                 WHERE UPPER(LABEL) LIKE CONCAT('%', UPPER(kw.value), '%')
               )
-            LIMIT 3
+            LIMIT 2
         )
         SELECT DISTINCT 
             snippet, chunk_index, path, similarity, search_type
@@ -324,7 +324,7 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
         )
         WHERE similarity >= {SIMILARITY_THRESHOLD}
         ORDER BY similarity DESC
-        LIMIT 3
+        LIMIT {TOP_K}
         """
 
         # Execute the query with parameters
