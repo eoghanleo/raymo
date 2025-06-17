@@ -258,15 +258,81 @@ def log_turn(role: str, message: str, metadata: dict = None):
 
 # ——— Question Processing ———
 def process_question(raw_q: str, property_id: int, chat_history: list) -> str:
-    """Process and enrich the user question."""
+    """Process and enrich the user question with smart context detection."""
     # Simple enrichment - add property context
     enriched = f"Guest inquiry for Property #{property_id}: {raw_q.strip()}"
     
-    # Add minimal context from recent conversation if relevant
-    if len(chat_history) > 1 and any(word in raw_q.lower() for word in ['it', 'this', 'that', 'there']):
-        last_exchange = chat_history[-2:] if len(chat_history) >= 2 else chat_history
-        context = f" (Context: discussing {last_exchange[-1]['content'][:30]}...)"
-        enriched += context
+    # Smart context detection using entity tracking and explicit reference patterns
+    if len(chat_history) > 1:
+        raw_lower = raw_q.lower()
+        
+        # 1. Check for explicit reference patterns that indicate follow-up
+        explicit_patterns = [
+            r'\b(it|this|that)\s+(is|was|does|can|will|should|would)',  # "how does it work", "what is this"
+            r'\bwhat\s+about\s+(it|this|that|them)\b',  # "what about it"
+            r'\b(tell|explain|show)\s+me\s+more\b',  # "tell me more"
+            r'\belse\s+about\b',  # "what else about"
+            r'\bthe\s+same\s+',  # "the same thing"
+            r'\balso\b.*\?',  # questions with "also"
+            r'^(and|but|so)\s+',  # starts with conjunctions
+            r'\b(how|why|when|where)\s+do\s+(i|you)\s+(use|turn|activate|access)\s+(it|this|that|them)\b'  # specific action questions
+        ]
+        
+        has_explicit_reference = any(re.search(pattern, raw_lower) for pattern in explicit_patterns)
+        
+        # 2. Entity/topic tracking - extract key nouns from previous exchange
+        if not has_explicit_reference and len(chat_history) >= 2:
+            # Get the last user question and assistant response
+            last_user_msg = next((msg['content'] for msg in reversed(chat_history[:-1]) if msg['role'] == 'user'), "")
+            last_assistant_msg = next((msg['content'] for msg in reversed(chat_history) if msg['role'] == 'assistant'), "")
+            
+            # Extract meaningful entities (nouns/topics) from previous exchange
+            # Focus on domain-specific terms that are likely to be referenced
+            entity_patterns = [
+                r'\b(pool|spa|hot tub|jacuzzi)\b',
+                r'\b(towel|linen|sheet|blanket)s?\b',
+                r'\b(kitchen|bedroom|bathroom|living room|garage|patio|deck|balcony)\b',
+                r'\b(wifi|internet|password|network)\b',
+                r'\b(parking|car|vehicle|garage|driveway)\b',
+                r'\b(key|lock|door|gate|access|code)\b',
+                r'\b(appliance|dishwasher|washer|dryer|oven|stove|microwave|refrigerator|fridge)\b',
+                r'\b(induction|cooktop|burner)\b',
+                r'\b(tv|television|remote|cable|streaming)\b',
+                r'\b(heat|ac|air|thermostat|temperature)\b',
+                r'\b(trash|garbage|recycling|bin)\b',
+                r'\b(checkout|checkin|arrival|departure)\b'
+            ]
+            
+            # Find entities in previous messages
+            previous_entities = set()
+            for pattern in entity_patterns:
+                previous_entities.update(re.findall(pattern, last_user_msg.lower()))
+                previous_entities.update(re.findall(pattern, last_assistant_msg.lower()))
+            
+            # Check if current question mentions any previous entities
+            current_entities = set()
+            for pattern in entity_patterns:
+                current_entities.update(re.findall(pattern, raw_lower))
+            
+            # If there's entity overlap, it might be a follow-up
+            has_entity_overlap = bool(previous_entities & current_entities)
+        else:
+            has_entity_overlap = False
+        
+        # 3. Apply context only if we have strong signals
+        if has_explicit_reference or (has_entity_overlap and len(raw_q.split()) < 10):
+            # Get the most relevant previous content
+            last_exchange = chat_history[-2:] if len(chat_history) >= 2 else chat_history
+            last_content = last_exchange[-1]['content']
+            
+            # Only add context if the last message was substantial and not a greeting
+            if len(last_content) > 30 and not any(greeting in last_content.lower() for greeting in ['welcome', 'hello', 'hi there']):
+                # Extract the most relevant part of the previous message
+                context_preview = last_content[:50].replace('\n', ' ').strip()
+                if not context_preview.endswith('.'):
+                    context_preview += '...'
+                context = f" (Following up on: {context_preview})"
+                enriched += context
     
     return enriched
 
