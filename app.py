@@ -635,74 +635,14 @@ def main():
                 "latency": latency,
                 "retrieval_time": retrieval_time,
                 "snippets": snippets,
-                "paths": paths,
-                "similarities": similarities,
-                "search_types": search_types,
-                "used_refinement": used_refinement,
-                "enriched_query": enriched_q,
+                "chunk_idxs": chunk_idxs if 'chunk_idxs' in locals() else [],
+                "paths": paths if 'paths' in locals() else [],
+                "similarities": similarities if 'similarities' in locals() else [],
+                "search_types": search_types if 'search_types' in locals() else [],
+                "used_refinement": used_refinement if 'used_refinement' in locals() else False,
+                "enriched_query": enriched_q if 'enriched_q' in locals() else raw_q,
                 "raw_query": raw_q
             }
-    
-    # Debug info with retrieved chunks
-    if st.session_state.config.get('debug_mode') and hasattr(st.session_state, 'last_debug_info'):
-        with st.sidebar.expander("🔍 Last Query Debug", expanded=True):
-            debug = st.session_state.last_debug_info
-            
-            # Query info
-            st.markdown("### Query Analysis")
-            st.markdown(f"**Original:** {debug.get('raw_query', 'N/A')}")
-            st.markdown(f"**Enriched:** {debug.get('enriched_query', 'N/A')}")
-            
-            # Performance summary
-            st.markdown("### Performance")
-            st.markdown(f"**Total time:** {debug['latency']:.2f}s")
-            st.markdown(f"**Retrieval time:** {debug['retrieval_time']:.2f}s")
-            st.markdown(f"**LLM time:** {debug['latency'] - debug['retrieval_time']:.2f}s")
-            st.markdown(f"**Refinement used:** {'Yes' if debug['used_refinement'] else 'No'}")
-            
-            # Retrieved chunks detail
-            st.markdown("### Retrieved Chunks")
-            st.markdown(f"**Total chunks found:** {len(debug.get('snippets', []))}")
-            
-            if debug.get('snippets'):
-                for i, (snippet, path, sim, stype, idx) in enumerate(zip(
-                    debug.get('snippets', []),
-                    debug.get('paths', []),
-                    debug.get('similarities', []),
-                    debug.get('search_types', []),
-                    debug.get('chunk_idxs', range(len(debug.get('snippets', []))))
-                ), 1):
-                    with st.expander(f"Chunk {i}: {stype.upper()} (Score: {sim:.3f})", expanded=True):
-                        # Chunk metadata
-                        st.caption(f"📄 Source: {path}")
-                        st.caption(f"📍 Chunk Index: {idx}")
-                        st.caption(f"🔍 Type: {stype}")
-                        st.caption(f"📊 Similarity Score: {sim:.3f}")
-                        
-                        # Why was it retrieved?
-                        if stype == 'semantic':
-                            st.info(f"✨ Retrieved via semantic similarity (cosine similarity: {sim:.3f})")
-                        else:
-                            st.info(f"🔤 Retrieved via keyword match (fixed score: {sim:.3f})")
-                        
-                        # Chunk content
-                        st.markdown("**Content:**")
-                        st.text_area(f"chunk_{i}_content", snippet, height=150, disabled=True, label_visibility="collapsed")
-                        
-                        # Additional insights
-                        word_count = len(snippet.split())
-                        st.caption(f"📏 Length: {word_count} words, {len(snippet)} characters")
-                
-                # Show keywords used for keyword search
-                if any(st == 'keyword' for st in debug.get('search_types', [])):
-                    st.divider()
-                    st.markdown("### Keyword Extraction")
-                    # Extract keywords from enriched query
-                    tokens = re.findall(r'\b\w{4,}\b', debug.get('enriched_query', '').lower())
-                    keywords = list(dict.fromkeys(tokens))[:5]
-                    st.markdown(f"**Keywords used:** {', '.join(keywords)}")
-            else:
-                st.warning("No chunks retrieved for this query")
 
 if __name__ == "__main__":
     main()
