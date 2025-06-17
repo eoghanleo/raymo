@@ -735,10 +735,18 @@ def main():
                 if any(st == 'keyword' for st in debug.get('search_types', [])):
                     st.divider()
                     st.markdown("### 🔤 Keyword Extraction")
-                    # Extract keywords from enriched query
+                    # Extract keywords from enriched query with same logic as retrieval
+                    stop_words = {'guest', 'inquiry', 'property', 'discussing', 'context'}
                     tokens = re.findall(r'\b\w{4,}\b', debug.get('enriched_query', '').lower())
-                    keywords = list(dict.fromkeys(tokens))[:5]
-                    st.markdown(f"**Keywords used:** {', '.join(keywords)}")
+                    keywords = []
+                    seen = set()
+                    for token in tokens:
+                        if token not in stop_words and token not in seen:
+                            keywords.append(token)
+                            seen.add(token)
+                            if len(keywords) >= 5:
+                                break
+                    st.markdown(f"**Keywords used:** {', '.join(keywords) if keywords else 'None'}")
             else:
                 st.warning("No chunks retrieved for this query")
 
