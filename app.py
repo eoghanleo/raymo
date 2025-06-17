@@ -283,6 +283,7 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
         keyword_json = json.dumps(keywords)
 
         # Step 2: Execute hybrid SQL with embedded keyword logic
+        # NOTE: Update EMBEDDINGS column name to match your table schema
         hybrid_sql = f"""
         WITH semantic_results AS (
             SELECT
@@ -290,7 +291,7 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                 CHUNK_INDEX AS chunk_index,
                 RELATIVE_PATH AS path,
                 VECTOR_COSINE_SIMILARITY(
-                    LABEL_EMBED,
+                    EMBEDDINGS,
                     {EMBED_FN}('{EMBED_MODEL}', ?)
                 ) AS similarity,
                 'semantic' AS search_type
@@ -311,7 +312,7 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
               AND EXISTS (
                 SELECT 1
                 FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) kw
-                WHERE UPPER(LABEL) LIKE CONCAT('%', UPPER(kw.value), '%')
+                WHERE UPPER(CHUNK) LIKE CONCAT('%', UPPER(kw.value), '%')
               )
             LIMIT 2
         )
@@ -359,11 +360,27 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         search_types = []
         
         for row in results:
-            snippets.append(row.SNIPPET)
-            chunk_idxs.append(row.CHUNK_INDEX)
-            paths.append(row.PATH)
-            similarities.append(row.SIMILARITY)
-            search_types.append(row.SEARCH_TYPE)
+            # Handle both dictionary-style and attribute-style access
+            if hasattr(row, 'SNIPPET'):
+                snippets.append(row.SNIPPET)
+                chunk_idxs.append(row.CHUNK_INDEX)
+                paths.append(row.PATH)
+                similarities.append(row.SIMILARITY)
+                search_types.append(row.SEARCH_TYPE)
+            elif isinstance(row, dict):
+                snippets.append(row.get('SNIPPET', row.get('snippet', '')))
+                chunk_idxs.append(row.get('CHUNK_INDEX', row.get('chunk_index', 0)))
+                paths.append(row.get('PATH', row.get('path', '')))
+                similarities.append(row.get('SIMILARITY', row.get('similarity', 0)))
+                search_types.append(row.get('SEARCH_TYPE', row.get('search_type', '')))
+            else:
+                # If row is a list/tuple, assume order: snippet, chunk_index, path, similarity, search_type
+                if len(row) >= 5:
+                    snippets.append(row[0])
+                    chunk_idxs.append(row[1])
+                    paths.append(row[2])
+                    similarities.append(row[3])
+                    search_types.append(row[4])
         
         if not snippets:
             fallback = "I don't have specific information about that. Please contact your host for assistance."
@@ -641,6 +658,70 @@ def main():
                 "enriched_query": enriched_q if 'enriched_q' in locals() else raw_q,
                 "raw_query": raw_q
             }
+    
+    # Enhanced debug info with retrieved chunks - MOVED TO SIDEBAR
+    if st.session_state.config.get('debug_mode') and hasattr(st.session_state, 'last_debug_info'):
+        with st.sidebar.expander("🔍 Last Query Debug - Detailed View", expanded=True):
+            debug = st.session_state.last_debug_info
+            
+            # Query info
+            st.markdown("### 📝 Query Analysis")
+            st.markdown(f"**Original:** {debug.get('raw_query', 'N/A')}")
+            st.markdown(f"**Enriched:** {debug.get('enriched_query', 'N/A')}")
+            
+            # Performance summary
+            st.markdown("### ⚡ Performance")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Time", f"{debug['latency']:.2f}s")
+                st.metric("Retrieval", f"{debug['retrieval_time']:.2f}s")
+            with col2:
+                st.metric("LLM Time", f"{debug['latency'] - debug['retrieval_time']:.2f}s")
+                st.metric("Refinement", "Yes" if debug['used_refinement'] else "No")
+            
+            # Retrieved chunks detail
+            st.markdown("### 📚 Retrieved Chunks")
+            st.markdown(f"**Total chunks found:** {len(debug.get('snippets', []))}")
+            
+            if debug.get('snippets'):
+                for i, snippet in enumerate(debug.get('snippets', []), 1):
+                    # Get corresponding metadata
+                    path = debug.get('paths', ['Unknown'])[i-1] if i-1 < len(debug.get('paths', [])) else 'Unknown'
+                    sim = debug.get('similarities', [0])[i-1] if i-1 < len(debug.get('similarities', [])) else 0
+                    stype = debug.get('search_types', ['unknown'])[i-1] if i-1 < len(debug.get('search_types', [])) else 'unknown'
+                    idx = debug.get('chunk_idxs', [0])[i-1] if i-1 < len(debug.get('chunk_idxs', [])) else 0
+                    
+                    with st.expander(f"📄 Chunk {i}: {stype.upper()} (Score: {sim:.3f})", expanded=True):
+                        # Chunk metadata
+                        st.caption(f"📂 Source: {path}")
+                        st.caption(f"📍 Chunk Index: {idx}")
+                        st.caption(f"🔍 Type: {stype}")
+                        st.caption(f"📊 Similarity Score: {sim:.3f}")
+                        
+                        # Why was it retrieved?
+                        if stype == 'semantic':
+                            st.info(f"✨ Retrieved via semantic similarity (cosine similarity: {sim:.3f})")
+                        else:
+                            st.info(f"🔤 Retrieved via keyword match (fixed score: {sim:.3f})")
+                        
+                        # Chunk content
+                        st.markdown("**Content:**")
+                        st.text_area(f"chunk_{i}_content", snippet, height=150, disabled=True, label_visibility="collapsed")
+                        
+                        # Additional insights
+                        word_count = len(snippet.split())
+                        st.caption(f"📏 Length: {word_count} words, {len(snippet)} characters")
+                
+                # Show keywords used for keyword search
+                if any(st == 'keyword' for st in debug.get('search_types', [])):
+                    st.divider()
+                    st.markdown("### 🔤 Keyword Extraction")
+                    # Extract keywords from enriched query
+                    tokens = re.findall(r'\b\w{4,}\b', debug.get('enriched_query', '').lower())
+                    keywords = list(dict.fromkeys(tokens))[:5]
+                    st.markdown(f"**Keywords used:** {', '.join(keywords)}")
+            else:
+                st.warning("No chunks retrieved for this query")
 
 if __name__ == "__main__":
     main()
