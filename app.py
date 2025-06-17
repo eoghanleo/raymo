@@ -9,6 +9,8 @@ import logging
 import hashlib
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Any
+import re
+
 
 # ——— App config ———
 st.set_page_config(
@@ -268,18 +270,19 @@ def process_question(raw_q: str, property_id: int, chat_history: list) -> str:
     
     return enriched
 
-# ——— Simplified Retrieval ———
+# ——— Hybrid Retrieval ———
 def retrieve_relevant_context(enriched_q: str, property_id: int):
-    """Fast, simplified retrieval using hybrid search."""
+    """Fast, smart hybrid retrieval using semantic and keyword search."""
     try:
         log_execution("🔍 Starting Retrieval", f"Property {property_id}")
         start_time = time.time()
-        
-        # Extract simple keywords (no appliance-specific logic)
-        import re
-        keywords = ' '.join(re.findall(r'\b\w{4,}\b', enriched_q.lower())[:3])
-        
-        # Single hybrid query - semantic + keyword
+
+        # Step 1: Extract meaningful keyword tokens (≥ 4 chars, deduplicated, lowercased)
+        tokens = re.findall(r'\b\w{4,}\b', enriched_q.lower())
+        keywords = list(dict.fromkeys(tokens))[:5]  # limit to top 5 unique keywords
+        keyword_json = json.dumps(keywords)
+
+        # Step 2: Execute hybrid SQL with embedded keyword logic
         hybrid_sql = f"""
         WITH semantic_results AS (
             SELECT
@@ -287,7 +290,7 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                 CHUNK_INDEX AS chunk_index,
                 RELATIVE_PATH AS path,
                 VECTOR_COSINE_SIMILARITY(
-                    EMBEDDINGS,
+                    LABEL_EMBEDDINGS,
                     {EMBED_FN}('{EMBED_MODEL}', ?)
                 ) AS similarity,
                 'semantic' AS search_type
@@ -301,12 +304,16 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                 CHUNK AS snippet,
                 CHUNK_INDEX AS chunk_index,
                 RELATIVE_PATH AS path,
-                0.7 AS similarity,
+                0.48 AS similarity,  -- lowered keyword match score to avoid dominance
                 'keyword' AS search_type
             FROM TEST_DB.CORTEX.RAW_TEXT
             WHERE PROPERTY_ID = ?
-                AND CONTAINS(UPPER(CHUNK), UPPER(?))
-            LIMIT 2
+              AND EXISTS (
+                SELECT 1
+                FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) kw
+                WHERE UPPER(LABEL) LIKE CONCAT('%', UPPER(kw.value), '%')
+              )
+            LIMIT 3
         )
         SELECT DISTINCT 
             snippet, chunk_index, path, similarity, search_type
@@ -319,32 +326,17 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
         ORDER BY similarity DESC
         LIMIT 3
         """
-        
-        # Execute query
-        df = session.sql(hybrid_sql, params=[
-            enriched_q, property_id, property_id, keywords
-        ]).collect()
-        
-        retrieval_time = time.time() - start_time
-        log_execution("✅ Retrieval Complete", f"Found {len(df)} chunks", retrieval_time)
-        
-        if not df:
-            return [], [], [], [], [], retrieval_time
-        
-        # Extract results
-        snippets = [row['SNIPPET'] for row in df]
-        chunk_idxs = [row['CHUNK_INDEX'] for row in df]
-        paths = [row['PATH'] for row in df]
-        similarities = [row['SIMILARITY'] for row in df]
-        search_types = [row['SEARCH_TYPE'] for row in df]
-        
-        return snippets, chunk_idxs, paths, similarities, search_types, retrieval_time
-        
+
+        # Execute the query with parameters
+        params = (enriched_q, property_id, property_id, keyword_json)
+        results = session.sql(hybrid_sql, params).collect()
+
+        log_execution("✅ Retrieval complete", f"{len(results)} results in {time.time() - start_time:.2f}s")
+        return results
+
     except Exception as e:
-        log_execution("❌ Retrieval Error", str(e))
-        raise ChatError("retrieval_error", 
-                       "I'm having trouble finding information. Please try again.",
-                       str(e))
+        log_execution("❌ Retrieval error", str(e))
+        return []
 
 # ——— Answer Generation ———
 def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int):
