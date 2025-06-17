@@ -278,8 +278,18 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
         start_time = time.time()
 
         # Step 1: Extract meaningful keyword tokens (≥ 4 chars, deduplicated, lowercased)
+        # Exclude common words that appear in every query due to enrichment
+        stop_words = {'guest', 'inquiry', 'property', 'discussing', 'context'}
         tokens = re.findall(r'\b\w{4,}\b', enriched_q.lower())
-        keywords = list(dict.fromkeys(tokens))[:5]  # limit to top 5 unique keywords
+        # Filter out stop words and deduplicate
+        keywords = []
+        seen = set()
+        for token in tokens:
+            if token not in stop_words and token not in seen:
+                keywords.append(token)
+                seen.add(token)
+                if len(keywords) >= 5:  # limit to top 5 unique keywords
+                    break
         keyword_json = json.dumps(keywords)
 
         # Step 2: Execute hybrid SQL with embedded keyword logic
@@ -291,7 +301,7 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                 CHUNK_INDEX AS chunk_index,
                 RELATIVE_PATH AS path,
                 VECTOR_COSINE_SIMILARITY(
-                    EMBEDDINGS,
+                    LABEL_EMBED,
                     {EMBED_FN}('{EMBED_MODEL}', ?)
                 ) AS similarity,
                 'semantic' AS search_type
