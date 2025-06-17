@@ -301,7 +301,7 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                 CHUNK_INDEX AS chunk_index,
                 RELATIVE_PATH AS path,
                 VECTOR_COSINE_SIMILARITY(
-                    LABEL_EMBED,
+                    EMBEDDINGS,
                     {EMBED_FN}('{EMBED_MODEL}', ?)
                 ) AS similarity,
                 'semantic' AS search_type
