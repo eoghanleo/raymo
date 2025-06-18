@@ -390,10 +390,31 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
             AND label_embed IS NOT NULL  -- Only valid, embedded chunks
             ORDER BY similarity DESC
             LIMIT {TOP_K}
+        ),
+        keyword_results AS (
+            SELECT
+                CHUNK AS snippet,
+                CHUNK_INDEX AS chunk_index,
+                RELATIVE_PATH AS path,
+                0.48 AS similarity,  -- lowered keyword match score to avoid dominance
+                'keyword' AS search_type
+            FROM TEST_DB.CORTEX.RAW_TEXT
+            WHERE PROPERTY_ID = ?
+            AND label_embed IS NOT NULL  -- Only valid, embedded chunks
+              AND EXISTS (
+                SELECT 1
+                FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) kw
+                WHERE UPPER(CHUNK) LIKE CONCAT('%', UPPER(kw.value), '%')
+              )
+            LIMIT 2
         )
         SELECT DISTINCT 
             snippet, chunk_index, path, similarity, search_type
-        FROM  FROM semantic_results
+        FROM (
+            SELECT * FROM semantic_results
+            UNION ALL
+            SELECT * FROM keyword_results
+        )
         WHERE similarity >= {SIMILARITY_THRESHOLD}
         ORDER BY similarity DESC
         LIMIT {TOP_K}
