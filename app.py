@@ -56,7 +56,7 @@ def get_session():
 session = get_session()
 
 # ——— Constants ———
-MODEL_NAME = 'llama3-70b-8192'
+MODEL_NAME = 'llama3-70b-8192'  # Updated Groq model name (without context size)
 FALLBACK_MODEL = 'MIXTRAL-8X7B'  # Snowflake Cortex fallback
 EMBED_MODEL = 'SNOWFLAKE-ARCTIC-EMBED-L-V2.0'
 EMBED_FN = 'SNOWFLAKE.CORTEX.EMBED_TEXT_1024'
@@ -375,7 +375,6 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
         # Step 2: Execute hybrid SQL with embedded keyword logic
         # NOTE: Update EMBEDDINGS column name to match your table schema
         hybrid_sql = f"""
-        USE WAREHOUSE RETRIEVAL;
         WITH semantic_results AS (
             SELECT
                 CHUNK AS snippet,
