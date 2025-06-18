@@ -157,12 +157,12 @@ def log_execution(step: str, details: str = "", timing: float = None):
 
 # ——— System Initialization ———
 def optimize_warehouse():
-    """Optimize warehouse settings for better performance."""
+    """Set warehouse for retrieval operations."""
     try:
-        session.sql("ALTER WAREHOUSE CORTEX_WH RESUME IF SUSPENDED").collect()
+        # Use RETRIEVAL warehouse for all operations
+        session.sql("USE WAREHOUSE RETRIEVAL").collect()
         session.sql("ALTER SESSION SET USE_CACHED_RESULT = TRUE").collect()
         session.sql("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 300").collect()
-        session.sql("SELECT 1").collect()  # Warm up
         return True
     except Exception as e:
         logging.error(f"Warehouse optimization failed: {e}")
@@ -201,74 +201,6 @@ EDITOR_PROMPT = json.dumps({
         "Maximum 50 words unless more detail is essential"
     ]
 })
-
-# ——— Enhanced Conversation Logging to Snowflake ———
-def log_turn(role: str, message: str, metadata: dict = None):
-    """Log conversation turns to Snowflake table with all metrics."""
-    if not st.session_state.config['enable_logging']:
-        return
-    
-    try:
-        # Prepare comprehensive data for logging
-        conversation_data = {
-            "role": role,
-            "message": message,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "metadata": metadata or {}
-        }
-        
-        # Add execution log if it's an assistant response with metrics
-        if role == "assistant" and metadata:
-            # Get execution steps for this response
-            execution_steps = []
-            for log_entry in st.session_state.execution_log:
-                if log_entry['timing']:  # Only include timed steps
-                    execution_steps.append({
-                        "step": log_entry['step'],
-                        "timing": log_entry['timing'],
-                        "details": log_entry['details']
-                    })
-            
-            # Add performance breakdown to metadata
-            conversation_data["metadata"]["execution_log"] = execution_steps
-            conversation_data["metadata"]["performance_summary"] = {
-                "total_latency": metadata.get("latency", 0),
-                "retrieval_time": metadata.get("retrieval_time", 0),
-                "llm_time": metadata.get("latency", 0) - metadata.get("retrieval_time", 0),
-                "sources_used": metadata.get("sources_used", 0),
-                "refinement_used": metadata.get("used_refinement", False),
-                "word_count_original": metadata.get("original_word_count", 0),
-                "word_count_final": metadata.get("final_word_count", 0)
-            }
-        
-        # Insert into Snowflake
-        insert_sql = """
-        INSERT INTO TEST_DB.CORTEX.conversations (
-            id,
-            created_at,
-            conversation,
-            property_id,
-            session_id
-        )
-        VALUES (
-            ?,                           -- id (UUID)
-            CURRENT_TIMESTAMP(),         -- created_at
-            PARSE_JSON(?),              -- conversation (JSON with all metrics)
-            ?,                          -- property_id
-            ?                           -- session_id
-        )
-        """
-        
-        session.sql(insert_sql, params=[
-            str(uuid.uuid4()),                              # Unique ID
-            json.dumps(conversation_data),                  # Conversation data with metrics
-            st.session_state.get('property_id'),           # Property ID
-            st.session_state.get('session_id')             # Session ID
-        ]).collect()
-        
-    except Exception as e:
-        # Log error but don't break the chat
-        logging.error(f"Failed to log to Snowflake: {e}")
 
 # ——— Question Processing ———
 def process_question(raw_q: str, property_id: int, chat_history: list) -> str:
@@ -356,6 +288,9 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
     try:
         log_execution("🔍 Starting Retrieval", f"Property {property_id}")
         start_time = time.time()
+        
+        # Ensure we're using RETRIEVAL warehouse
+        session.sql("USE WAREHOUSE RETRIEVAL").collect()
 
         # Step 1: Extract meaningful keyword tokens (≥ 4 chars, deduplicated, lowercased)
         # Exclude common words that appear in every query due to enrichment
@@ -429,7 +364,7 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
 
     except Exception as e:
         log_execution("❌ Retrieval error", str(e))
-        return [], [], [], [], [], 0
+        return []
 
 # ——— Answer Generation ———
 def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int):
@@ -521,20 +456,33 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
                 # Fallback to Cortex - DO NOT try Groq again with different model
                 log_execution("⚠️ Groq failed, using Cortex", str(e))
                 stage1_start = time.time()  # Reset timer for Cortex
+                
+                # Switch to CORTEX_WH only for LLM generation
+                session.sql("USE WAREHOUSE CORTEX_WH").collect()
+                
                 df = session.sql(
                     "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
                     params=[FALLBACK_MODEL, full_prompt]
                 ).collect()
                 initial_response = df[0].RESPONSE.strip() if df else "I'm having trouble generating a response."
                 log_execution("🤖 Cortex Fallback Response", f"{len(initial_response.split())} words", time.time() - stage1_start)
+                
+                # Switch back to RETRIEVAL warehouse
+                session.sql("USE WAREHOUSE RETRIEVAL").collect()
         else:
             # Use Cortex directly
+            # Switch to CORTEX_WH only for LLM generation
+            session.sql("USE WAREHOUSE CORTEX_WH").collect()
+            
             df = session.sql(
                 "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
                 params=[FALLBACK_MODEL, full_prompt]
             ).collect()
             initial_response = df[0].RESPONSE.strip() if df else "I'm having trouble generating a response."
             log_execution("🤖 LLM Response", f"{len(initial_response.split())} words", time.time() - stage1_start)
+            
+            # Switch back to RETRIEVAL warehouse
+            session.sql("USE WAREHOUSE RETRIEVAL").collect()
         
         stage1_time = time.time() - stage1_start
         word_count = len(initial_response.split())
@@ -595,16 +543,28 @@ def refine_response(original_response: str, original_question: str) -> str:
             "Refined response:"
         )
         
+        # Switch to CORTEX_WH only for LLM generation
+        session.sql("USE WAREHOUSE CORTEX_WH").collect()
+        
         df = session.sql(
             "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
             params=[FALLBACK_MODEL, refinement_prompt]
         ).collect()
         
         refined = df[0].RESPONSE.strip() if df else original_response
+        
+        # Switch back to RETRIEVAL warehouse
+        session.sql("USE WAREHOUSE RETRIEVAL").collect()
+        
         return refined
         
     except Exception as e:
         log_execution("❌ Refinement Error", str(e))
+        # Ensure we're back on RETRIEVAL warehouse
+        try:
+            session.sql("USE WAREHOUSE RETRIEVAL").collect()
+        except:
+            pass
         return original_response
 
 # ——— Stream Response ———
@@ -756,7 +716,6 @@ def main():
             f"I'm here to help with information about your property. What would you like to know?"
         )
         st.session_state.chat_history.append({"role": "assistant", "content": welcome})
-        log_turn("assistant", welcome, {"type": "welcome"})
 
     # Display chat history
     for msg in st.session_state.chat_history:
@@ -773,7 +732,6 @@ def main():
         # Add user message
         st.session_state.chat_history.append({"role": "user", "content": raw_q})
         st.chat_message("user", avatar="🙋‍♂️").write(raw_q)
-        log_turn("user", raw_q)
         
         # Generate response
         response_placeholder = st.chat_message("assistant", avatar="🏠").empty()
@@ -793,6 +751,8 @@ def main():
                 answer = "I apologize, but I encountered an error. Please try again."
                 snippets = []
                 retrieval_time = 0
+                used_refinement = False
+                original_word_count = 0
         
         log_execution("🏁 Query Complete", f"Total time: {latency:.3f}s")
         
@@ -808,11 +768,10 @@ def main():
             "retrieval_time": retrieval_time,
             "sources_used": len(snippets),
             "used_refinement": used_refinement,
-            "original_word_count": original_word_count if 'original_word_count' in locals() else 0,
+            "original_word_count": original_word_count,
             "final_word_count": len(answer.split()),
             "sources": [{"path": p, "similarity": s, "type": t} for p, s, t in zip(paths, similarities, search_types)] if snippets else []
         }
-        log_turn("assistant", answer, metrics)
         monitor.log_request(metrics)
         
         # Store debug info
