@@ -56,8 +56,8 @@ def get_session():
 session = get_session()
 
 # ——— Constants ———
-MODEL_NAME = 'llama3-70b-8192'  # Updated Groq model name (without context size)
-FALLBACK_MODEL = 'llama3-70b'  # Snowflake Cortex fallback
+MODEL_NAME = 'llama3-70b-8192'
+FALLBACK_MODEL = 'MIXTRAL-8X7B'  # Snowflake Cortex fallback
 EMBED_MODEL = 'SNOWFLAKE-ARCTIC-EMBED-L-V2.0'
 EMBED_FN = 'SNOWFLAKE.CORTEX.EMBED_TEXT_1024'
 WORD_THRESHOLD = 100  # Increased from 50 to 100
@@ -381,7 +381,7 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                 CHUNK_INDEX AS chunk_index,
                 RELATIVE_PATH AS path,
                 VECTOR_COSINE_SIMILARITY(
-                    EMBEDDINGS,
+                    LABEL_EMBED,
                     {EMBED_FN}('{EMBED_MODEL}', ?)
                 ) AS similarity,
                 'semantic' AS search_type
@@ -516,13 +516,15 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
                 log_execution("🚀 Groq Response", f"Tokens: {completion.usage.total_tokens}", time.time() - stage1_start)
                 
             except Exception as e:
-                # Fallback to Cortex
+                # Fallback to Cortex - DO NOT try Groq again with different model
                 log_execution("⚠️ Groq failed, using Cortex", str(e))
+                stage1_start = time.time()  # Reset timer for Cortex
                 df = session.sql(
                     "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
                     params=[FALLBACK_MODEL, full_prompt]
                 ).collect()
                 initial_response = df[0].RESPONSE.strip() if df else "I'm having trouble generating a response."
+                log_execution("🤖 Cortex Fallback Response", f"{len(initial_response.split())} words", time.time() - stage1_start)
         else:
             # Use Cortex directly
             df = session.sql(
@@ -530,6 +532,7 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
                 params=[FALLBACK_MODEL, full_prompt]
             ).collect()
             initial_response = df[0].RESPONSE.strip() if df else "I'm having trouble generating a response."
+            log_execution("🤖 LLM Response", f"{len(initial_response.split())} words", time.time() - stage1_start)
         
         stage1_time = time.time() - stage1_start
         word_count = len(initial_response.split())
@@ -569,7 +572,7 @@ def refine_response(original_response: str, original_question: str) -> str:
                 ]
                 
                 completion = groq_client.chat.completions.create(
-                    model=MODEL_NAME,
+                    model=MODEL_NAME,  # Use Groq model, not fallback
                     messages=messages,
                     temperature=0.3,
                     max_tokens=100,
@@ -579,10 +582,10 @@ def refine_response(original_response: str, original_question: str) -> str:
                 return completion.choices[0].message.content.strip()
                 
             except Exception as e:
-                log_execution("⚠️ Groq refinement failed", str(e))
-                # Fall through to Cortex
+                log_execution("⚠️ Groq refinement failed, using Cortex", str(e))
+                # Fall through to Cortex - DO NOT retry with different model
         
-        # Cortex fallback
+        # Cortex refinement (either as fallback or primary)
         refinement_prompt = (
             EDITOR_PROMPT + "\n\n" +
             f"Question: {original_question}\n" +
