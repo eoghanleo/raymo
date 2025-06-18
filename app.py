@@ -56,7 +56,7 @@ def get_session():
 session = get_session()
 
 # ——— Constants ———
-MODEL_NAME = 'mixtral-8x7b-32768'  # Groq model name
+MODEL_NAME = 'mixtral-8x7b'  # Updated Groq model name (without context size)
 FALLBACK_MODEL = 'MIXTRAL-8X7B'  # Snowflake Cortex fallback
 EMBED_MODEL = 'SNOWFLAKE-ARCTIC-EMBED-L-V2.0'
 EMBED_FN = 'SNOWFLAKE.CORTEX.EMBED_TEXT_1024'
