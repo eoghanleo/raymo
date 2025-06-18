@@ -10,6 +10,8 @@ import hashlib
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Any
 import re
+import os
+from groq import Groq
 
 
 # ——— App config ———
@@ -18,6 +20,18 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# ——— Initialize Groq client ———
+@st.cache_resource
+def get_groq_client():
+    """Initialize Groq client with API key."""
+    api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("groq", {}).get("api_key")
+    if not api_key:
+        st.error("⚠️ Groq API key not found. Please set GROQ_API_KEY environment variable or add to Streamlit secrets.")
+        return None
+    return Groq(api_key=api_key)
+
+groq_client = get_groq_client()
 
 # ——— Initialize Snowpark session ———
 @st.cache_resource
@@ -42,8 +56,8 @@ def get_session():
 session = get_session()
 
 # ——— Constants ———
-MODEL_NAME = 'MIXTRAL-8X7B'  # The actual model
-REFINE_MODEL = 'MIXTRAL-8X7B'  # Same model for refinement
+MODEL_NAME = 'mixtral-8x7b-32768'  # Groq model name
+FALLBACK_MODEL = 'MIXTRAL-8X7B'  # Snowflake Cortex fallback
 EMBED_MODEL = 'SNOWFLAKE-ARCTIC-EMBED-L-V2.0'
 EMBED_FN = 'SNOWFLAKE.CORTEX.EMBED_TEXT_1024'
 WORD_THRESHOLD = 100  # Increased from 50 to 100
@@ -367,7 +381,7 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                 CHUNK_INDEX AS chunk_index,
                 RELATIVE_PATH AS path,
                 VECTOR_COSINE_SIMILARITY(
-                    LABEL_EMBED,
+                    EMBEDDINGS,
                     {EMBED_FN}('{EMBED_MODEL}', ?)
                 ) AS similarity,
                 'semantic' AS search_type
@@ -477,13 +491,47 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         
         # Generate response
         stage1_start = time.time()
-        df = session.sql(
-            "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
-            params=[MODEL_NAME, full_prompt]
-        ).collect()
-        stage1_time = time.time() - stage1_start
         
-        initial_response = df[0].RESPONSE.strip() if df else "I'm having trouble generating a response."
+        # Try Groq first, fallback to Cortex if needed
+        use_groq = st.session_state.config.get('use_groq', True)
+        if use_groq and groq_client:
+            try:
+                # Convert prompt to Groq format
+                messages = [
+                    {"role": "system", "content": "You are a helpful, warm property expert. Answer only the most recent guest request using the provided property information. Keep responses short and friendly, max 100 words."},
+                    {"role": "user", "content": f"Guest: {raw_question}\n\n{context_section}\n\nBased on the property information above, please answer the guest's question."}
+                ]
+                
+                # Call Groq API
+                completion = groq_client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=200,
+                    top_p=0.9,
+                    stream=False
+                )
+                
+                initial_response = completion.choices[0].message.content.strip()
+                log_execution("🚀 Groq Response", f"Tokens: {completion.usage.total_tokens}", time.time() - stage1_start)
+                
+            except Exception as e:
+                # Fallback to Cortex
+                log_execution("⚠️ Groq failed, using Cortex", str(e))
+                df = session.sql(
+                    "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
+                    params=[FALLBACK_MODEL, full_prompt]
+                ).collect()
+                initial_response = df[0].RESPONSE.strip() if df else "I'm having trouble generating a response."
+        else:
+            # Use Cortex directly
+            df = session.sql(
+                "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
+                params=[FALLBACK_MODEL, full_prompt]
+            ).collect()
+            initial_response = df[0].RESPONSE.strip() if df else "I'm having trouble generating a response."
+        
+        stage1_time = time.time() - stage1_start
         word_count = len(initial_response.split())
         
         log_execution("🤖 LLM Response", f"{word_count} words", stage1_time)
@@ -511,6 +559,30 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
 def refine_response(original_response: str, original_question: str) -> str:
     """Refine overly long responses."""
     try:
+        use_groq = st.session_state.config.get('use_groq', True)
+        if use_groq and groq_client:
+            try:
+                # Groq refinement
+                messages = [
+                    {"role": "system", "content": "You are an editor. Make responses more concise while keeping all facts. Keep warm, friendly tone. Maximum 50 words unless more detail is essential."},
+                    {"role": "user", "content": f"Question: {original_question}\n\nResponse to refine: {original_response}\n\nRefined response:"}
+                ]
+                
+                completion = groq_client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=100,
+                    stream=False
+                )
+                
+                return completion.choices[0].message.content.strip()
+                
+            except Exception as e:
+                log_execution("⚠️ Groq refinement failed", str(e))
+                # Fall through to Cortex
+        
+        # Cortex fallback
         refinement_prompt = (
             EDITOR_PROMPT + "\n\n" +
             f"Question: {original_question}\n" +
@@ -520,7 +592,7 @@ def refine_response(original_response: str, original_question: str) -> str:
         
         df = session.sql(
             "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
-            params=[REFINE_MODEL, refinement_prompt]
+            params=[FALLBACK_MODEL, refinement_prompt]
         ).collect()
         
         refined = df[0].RESPONSE.strip() if df else original_response
@@ -572,6 +644,24 @@ def main():
             st.text(f"Retrieved chunks: {TOP_K}")
             st.text(f"Similarity threshold: {SIMILARITY_THRESHOLD}")
             st.text(f"Refinement threshold: {WORD_THRESHOLD} words")
+            
+            # LLM Provider Toggle
+            use_groq = st.checkbox(
+                "🚀 Use Groq (95% cheaper!)",
+                value=st.session_state.config.get('use_groq', True),
+                help="Toggle between Groq and Snowflake Cortex",
+                disabled=not groq_client
+            )
+            st.session_state.config['use_groq'] = use_groq
+            
+            # LLM Status
+            if use_groq and groq_client:
+                st.success("✅ Using Groq - $0.0017/query")
+            elif not groq_client:
+                st.error("❌ Groq API key not found")
+                st.warning("💰 Using Snowflake Cortex - $0.0375/query")
+            else:
+                st.info("💰 Using Snowflake Cortex - $0.0375/query")
             
             # Debug mode toggle
             st.session_state.config['debug_mode'] = st.checkbox(
