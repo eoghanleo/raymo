@@ -387,7 +387,6 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                 'semantic' AS search_type
             FROM TEST_DB.CORTEX.RAW_TEXT
             WHERE PROPERTY_ID = ?
-            AND label_embed IS NOT NULL  -- Only valid, embedded chunks
             ORDER BY similarity DESC
             LIMIT {TOP_K}
         ),
@@ -400,7 +399,6 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                 'keyword' AS search_type
             FROM TEST_DB.CORTEX.RAW_TEXT
             WHERE PROPERTY_ID = ?
-                AND label_embed IS NOT NULL  -- Only valid, embedded chunks
               AND EXISTS (
                 SELECT 1
                 FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) kw
