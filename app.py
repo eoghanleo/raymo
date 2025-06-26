@@ -248,7 +248,22 @@ class ConversationLogger:
         
         try:
             results = self.session.sql(query_sql, params=[property_id, limit]).collect()
-            return [dict(row) for row in results]
+            def row_to_dict(row):
+                if hasattr(row, 'as_dict'):
+                    return row.as_dict()
+                # Fallback: build dict from known columns
+                return {
+                    "CONVERSATION_ID": getattr(row, "CONVERSATION_ID", None),
+                    "SESSION_ID": getattr(row, "SESSION_ID", None),
+                    "START_TIME": getattr(row, "START_TIME", None),
+                    "END_TIME": getattr(row, "END_TIME", None),
+                    "TOTAL_MESSAGES": getattr(row, "TOTAL_MESSAGES", None),
+                    "AVERAGE_RESPONSE_TIME": getattr(row, "AVERAGE_RESPONSE_TIME", None),
+                    "TOTAL_COST": getattr(row, "TOTAL_COST", None),
+                    "LLM_PROVIDER": getattr(row, "LLM_PROVIDER", None),
+                    "STATUS": getattr(row, "STATUS", None)
+                }
+            return [row_to_dict(row) for row in results]
         except Exception as e:
             logging.error(f"Failed to get conversation history: {e}")
             return []
@@ -277,7 +292,25 @@ class ConversationLogger:
         
         try:
             results = self.session.sql(query_sql, params=[conversation_id]).collect()
-            return [dict(row) for row in results]
+            def row_to_dict(row):
+                if hasattr(row, 'as_dict'):
+                    return row.as_dict()
+                return {
+                    "MESSAGE_ORDER": getattr(row, "MESSAGE_ORDER", None),
+                    "ROLE": getattr(row, "ROLE", None),
+                    "CONTENT": getattr(row, "CONTENT", None),
+                    "ENRICHED_QUERY": getattr(row, "ENRICHED_QUERY", None),
+                    "RETRIEVAL_TIME": getattr(row, "RETRIEVAL_TIME", None),
+                    "LLM_RESPONSE_TIME": getattr(row, "LLM_RESPONSE_TIME", None),
+                    "TOTAL_RESPONSE_TIME": getattr(row, "TOTAL_RESPONSE_TIME", None),
+                    "TOKENS_USED": getattr(row, "TOKENS_USED", None),
+                    "COST": getattr(row, "COST", None),
+                    "SOURCES_USED": getattr(row, "SOURCES_USED", None),
+                    "USED_REFINEMENT": getattr(row, "USED_REFINEMENT", None),
+                    "LLM_PROVIDER": getattr(row, "LLM_PROVIDER", None),
+                    "CREATED_AT": getattr(row, "CREATED_AT", None)
+                }
+            return [row_to_dict(row) for row in results]
         except Exception as e:
             logging.error(f"Failed to get conversation messages: {e}")
             return []
