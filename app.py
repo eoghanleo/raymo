@@ -733,6 +733,29 @@ def refine_response(original_response: str, original_question: str) -> str:
             pass
         return original_response
 
+# ——— Content Sanitization ———
+def sanitize_for_markdown(content: str) -> str:
+    """Sanitize content to prevent markdown rendering issues."""
+    if not content:
+        return ""
+    
+    # Replace problematic characters that might interfere with markdown parsing
+    sanitized = content.replace('\\', '\\\\')  # Escape backslashes
+    sanitized = sanitized.replace('`', '\\`')  # Escape backticks
+    sanitized = sanitized.replace('*', '\\*')  # Escape asterisks
+    sanitized = sanitized.replace('_', '\\_')  # Escape underscores
+    sanitized = sanitized.replace('[', '\\[')  # Escape brackets
+    sanitized = sanitized.replace(']', '\\]')  # Escape brackets
+    sanitized = sanitized.replace('(', '\\(')  # Escape parentheses
+    sanitized = sanitized.replace(')', '\\)')  # Escape parentheses
+    sanitized = sanitized.replace('#', '\\#')  # Escape hash
+    sanitized = sanitized.replace('+', '\\+')  # Escape plus
+    sanitized = sanitized.replace('-', '\\-')  # Escape minus
+    sanitized = sanitized.replace('.', '\\.')  # Escape dots
+    sanitized = sanitized.replace('!', '\\!')  # Escape exclamation
+    
+    return sanitized
+
 # ——— Stream Response ———
 def stream_response(response: str, placeholder):
     """Simulate streaming for better UX."""
@@ -742,9 +765,9 @@ def stream_response(response: str, placeholder):
     for i, word in enumerate(words):
         streamed.append(word)
         if i < len(words) - 1:
-            placeholder.markdown(' '.join(streamed) + " ▌")
+            placeholder.markdown(sanitize_for_markdown(' '.join(streamed)) + " ▌")
         else:
-            placeholder.markdown(' '.join(streamed))
+            placeholder.markdown(sanitize_for_markdown(' '.join(streamed)))
         time.sleep(0.02)
 
 # ——— Main App ———
@@ -852,7 +875,7 @@ def main():
                 
                 # Show enriched query
                 if info.get('enriched_query') != info.get('raw_query'):
-                    st.info(f"**Enriched Query:** {info.get('enriched_query', '')}")
+                    st.info(f"**Enriched Query:** {sanitize_for_markdown(info.get('enriched_query', ''))}")
                 
                 if info.get('snippets'):
                     for i, snippet in enumerate(info.get('snippets', []), 1):
@@ -863,7 +886,7 @@ def main():
                         st.markdown(f"**Chunk {i}:**")
                         st.caption(f"Type: {'Cosine (semantic)' if stype == 'semantic' else 'Keyword'} | Similarity: {sim:.3f}")
                         if path:
-                            st.caption(f"Source: {path}")
+                            st.caption(f"Source: {sanitize_for_markdown(path)}")
                         st.text_area(f"chunk_{i}_content", snippet, height=100, disabled=True, label_visibility="collapsed")
                         if i < len(info.get('snippets', [])):
                             st.divider()
@@ -890,9 +913,9 @@ def main():
                 # Show last 20 entries, newest first
                 for log_entry in reversed(filtered_logs[-20:]):
                     timing_info = f" ({log_entry['timing']})" if log_entry['timing'] else ""
-                    st.markdown(f"**{log_entry['timestamp']}** {log_entry['step']}{timing_info}")
+                    st.markdown(f"**{log_entry['timestamp']}** {sanitize_for_markdown(log_entry['step'])}{timing_info}")
                     if log_entry['details']:
-                        st.markdown(f"  ↳ {log_entry['details']}")
+                        st.markdown(f"  ↳ {sanitize_for_markdown(log_entry['details'])}")
                 
                 # Summary stats at the bottom
                 if filtered_logs:
