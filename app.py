@@ -15,6 +15,8 @@ from groq import Groq
 
 
 # ——— Conversation Logging ———
+# To check the schema of the messages table in Snowflake, run:
+# DESC TABLE CHAT_MESSAGES;
 class ConversationLogger:
     """Minimal conversation logging using VARIANT for metadata."""
     def __init__(self, session: Session):
@@ -91,7 +93,8 @@ class ConversationLogger:
             ]
             self.session.sql(insert_sql, params=params).collect()
             return True
-        except Exception:
+        except Exception as e:
+            log_execution("❌ Snowflake log_message error", str(e))
             return False
 
     def end_conversation(self, conversation_id: str):
