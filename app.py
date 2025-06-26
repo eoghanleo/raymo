@@ -1047,21 +1047,22 @@ def main():
                 "enriched_query": enriched_q if 'enriched_q' in locals() else raw_q,
                 "raw_query": raw_q
             }
-    
-    # Show retrieved chunks sidebar expander after a query if last_debug_info is available
-    if hasattr(st.session_state, 'last_debug_info'):
-        with st.sidebar.expander("🔍 Retrieved Chunks", expanded=True):
-            debug = st.session_state.last_debug_info
-            st.markdown(f"**Total chunks found:** {len(debug.get('snippets', []))}")
-            if debug.get('snippets'):
-                for i, snippet in enumerate(debug.get('snippets', []), 1):
-                    stype = debug.get('search_types', ['unknown'])[i-1] if i-1 < len(debug.get('search_types', [])) else 'unknown'
-                    sim = debug.get('similarities', [0])[i-1] if i-1 < len(debug.get('similarities', [])) else 0
-                    st.markdown(f"**Chunk {i} ({stype}):** Similarity: {sim:.3f}")
-                    st.text_area(f"chunk_{i}_content", snippet, height=100, disabled=True, label_visibility="collapsed")
-                    st.divider()
-            else:
-                st.info("No chunks retrieved for this query.")
+        
+        # Always show Retrieved Chunks section in the sidebar after a query
+        if hasattr(st.session_state, 'last_debug_info'):
+            with st.sidebar.expander("📚 Retrieved Chunks (Similarity & Type)", expanded=True):
+                debug = st.session_state.last_debug_info
+                st.markdown(f"**Total chunks found:** {len(debug.get('snippets', []))}")
+                if debug.get('snippets'):
+                    for i, snippet in enumerate(debug.get('snippets', []), 1):
+                        stype = debug.get('search_types', ['unknown'])[i-1] if i-1 < len(debug.get('search_types', [])) else 'unknown'
+                        sim = debug.get('similarities', [0])[i-1] if i-1 < len(debug.get('similarities', [])) else 0
+                        st.markdown(f"**Chunk {i}:**")
+                        st.caption(f"Type: {'Cosine (semantic)' if stype == 'semantic' else 'Keyword'} | Similarity: {sim:.3f}")
+                        st.text_area(f"chunk_{i}_content", snippet, height=100, disabled=True, label_visibility="collapsed")
+                        st.divider()
+                else:
+                    st.info("No chunks retrieved for this query.")
 
 if __name__ == "__main__":
     main()
