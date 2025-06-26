@@ -1208,19 +1208,19 @@ def main():
                         
                         if not test_result['conversations_table'] or not test_result['messages_table']:
                             st.error("❌ Tables not found. Check table creation.")
-                    
-                    # Manual conversation end test
-                    if st.session_state.conversation_id:
-                        st.divider()
-                        st.markdown("**Manual Conversation End Test:**")
-                        if st.button("🔚 End Current Conversation"):
-                            with st.spinner("Ending conversation..."):
-                                conversation_logger.end_conversation(st.session_state.conversation_id)
-                                st.success(f"✅ Conversation {st.session_state.conversation_id[:8]}... ended")
-                                st.session_state.conversation_id = None
-                                st.rerun()
-                else:
-                    st.error(f"❌ Database connection failed: {test_result.get('error', 'Unknown error')}")
+                        
+                        # Manual conversation end test
+                        if st.session_state.conversation_id:
+                            st.divider()
+                            st.markdown("**Manual Conversation End Test:**")
+                            if st.button("🔚 End Current Conversation"):
+                                with st.spinner("Ending conversation..."):
+                                    conversation_logger.end_conversation(st.session_state.conversation_id)
+                                    st.success(f"✅ Conversation {st.session_state.conversation_id[:8]}... ended")
+                                    st.session_state.conversation_id = None
+                                    st.rerun()
+                    else:
+                        st.error(f"❌ Database connection failed: {test_result.get('error', 'Unknown error')}")
     
     # Property selection
     if st.session_state.property_id is None:
