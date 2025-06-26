@@ -919,11 +919,6 @@ def main():
                                 start_time = conv['START_TIME'].strftime("%m/%d %H:%M") if conv['START_TIME'] else "Unknown"
                                 status_emoji = "🟢" if conv['STATUS'] == 'ACTIVE' else "🔴"
                                 st.markdown(f"{status_emoji} **{start_time}** ({len(conversation_logger.get_conversation_messages(conv['CONVERSATION_ID']))} messages)")
-                                
-                                if conv['average_response_time']:
-                                    st.caption(f"Avg response: {conv['average_response_time']:.2f}s")
-                                if conv['total_cost']:
-                                    st.caption(f"Cost: ${conv['total_cost']:.4f}")
                             
                             with col2:
                                 if st.button("📋", key=f"view_{conv['CONVERSATION_ID']}", help="View messages"):
