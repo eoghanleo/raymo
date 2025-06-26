@@ -834,42 +834,6 @@ def main():
                 st.session_state.execution_log = []
                 st.rerun()
         
-        # Export conversations button
-        if st.session_state.property_id:
-            if st.button("📊 Export Conversations", type="secondary", use_container_width=True):
-                # Get all conversations for the property
-                conversations = conversation_logger.get_conversation_history(st.session_state.property_id, limit=100)
-                
-                if conversations:
-                    # Create export data
-                    export_data = []
-                    for conv in conversations:
-                        messages = conversation_logger.get_conversation_messages(conv['CONVERSATION_ID'])
-                        conv_data = {
-                            'conversation_id': conv['CONVERSATION_ID'],
-                            'session_id': conv['SESSION_ID'],
-                            'start_time': conv['START_TIME'].isoformat() if conv['START_TIME'] else None,
-                            'end_time': conv['END_TIME'].isoformat() if conv['END_TIME'] else None,
-                            'total_messages': len(messages),
-                            'average_response_time': None,
-                            'total_cost': None,
-                            'llm_provider': None,
-                            'status': conv['STATUS'],
-                            'messages': messages
-                        }
-                        export_data.append(conv_data)
-                    
-                    # Convert to JSON for download
-                    json_data = json.dumps(export_data, indent=2, default=str)
-                    st.download_button(
-                        label="💾 Download JSON",
-                        data=json_data,
-                        file_name=f"property_{st.session_state.property_id}_conversations.json",
-                        mime="application/json"
-                    )
-                else:
-                    st.warning("No conversations to export.")
-        
         # Performance metrics
         with st.expander("📈 Performance Metrics", expanded=True):
             metrics = monitor.get_dashboard_metrics()
@@ -1084,8 +1048,8 @@ def main():
                 "raw_query": raw_q
             }
     
-    # Retrieved Chunks Debug Info
-    if st.session_state.config.get('debug_mode') and hasattr(st.session_state, 'last_debug_info'):
+    # Show retrieved chunks sidebar expander after a query if last_debug_info is available
+    if hasattr(st.session_state, 'last_debug_info'):
         with st.sidebar.expander("🔍 Retrieved Chunks", expanded=True):
             debug = st.session_state.last_debug_info
             st.markdown(f"**Total chunks found:** {len(debug.get('snippets', []))}")
