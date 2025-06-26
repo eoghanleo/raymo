@@ -236,8 +236,7 @@ if 'config' not in st.session_state:
         'max_response_words': 100,
         'context_window': 4,
         'enable_logging': True,
-        'enable_refinement': True,
-        'debug_mode': False
+        'enable_refinement': True
     }
 
 # ——— Performance Monitor ———
@@ -299,7 +298,7 @@ class ChatError:
     
     def display(self):
         st.error(f"😔 {self.user_message}")
-        if st.session_state.config.get('debug_mode') and self.technical_details:
+        if self.technical_details:
             with st.expander("Technical details"):
                 st.code(self.technical_details)
 
@@ -760,6 +759,8 @@ def main():
         st.session_state.conversation_id = None
     if 'message_counter' not in st.session_state:
         st.session_state.message_counter = 0
+    if 'last_query_info' not in st.session_state:
+        st.session_state.last_query_info = None
     
     # Sidebar
     with st.sidebar:
@@ -777,6 +778,7 @@ def main():
                 st.session_state.session_id = str(uuid.uuid4())
                 st.session_state.conversation_id = None
                 st.session_state.message_counter = 0
+                st.session_state.last_query_info = None
                 st.rerun()
         
         # System settings (read-only)
@@ -804,13 +806,6 @@ def main():
             else:
                 st.info("💰 Using Snowflake Cortex - $0.0375/query")
             
-            # Debug mode toggle
-            st.session_state.config['debug_mode'] = st.checkbox(
-                "Debug Mode",
-                st.session_state.config.get('debug_mode', False),
-                help="Show technical details"
-            )
-            
             # Conversation logging toggle
             st.session_state.config['enable_conversation_logging'] = st.checkbox(
                 "💾 Log Conversations",
@@ -828,6 +823,7 @@ def main():
                 
                 st.session_state.chat_history = []
                 st.session_state.message_counter = 0
+                st.session_state.last_query_info = None
                 st.rerun()
         with col2:
             if st.button("🗑️ Clear Logs"):
@@ -847,7 +843,40 @@ def main():
                 if metrics['recent_errors'] > 0:
                     st.warning(f"⚠️ {metrics['recent_errors']} recent errors")
         
-        # Execution log - always visible for performance debugging
+        # Retrieved Chunks - Always visible after a query
+        if st.session_state.last_query_info:
+            with st.expander("📚 Retrieved Chunks (Similarity & Type)", expanded=True):
+                info = st.session_state.last_query_info
+                st.markdown(f"**Total chunks found:** {len(info.get('snippets', []))}")
+                
+                # Show enriched query
+                if info.get('enriched_query') != info.get('raw_query'):
+                    st.info(f"**Enriched Query:** {info.get('enriched_query', '')}")
+                
+                if info.get('snippets'):
+                    for i, snippet in enumerate(info.get('snippets', []), 1):
+                        stype = info.get('search_types', ['unknown'])[i-1] if i-1 < len(info.get('search_types', [])) else 'unknown'
+                        sim = info.get('similarities', [0])[i-1] if i-1 < len(info.get('similarities', [])) else 0
+                        path = info.get('paths', [''])[i-1] if i-1 < len(info.get('paths', [])) else ''
+                        
+                        st.markdown(f"**Chunk {i}:**")
+                        st.caption(f"Type: {'Cosine (semantic)' if stype == 'semantic' else 'Keyword'} | Similarity: {sim:.3f}")
+                        if path:
+                            st.caption(f"Source: {path}")
+                        st.text_area(f"chunk_{i}_content", snippet, height=100, disabled=True, label_visibility="collapsed")
+                        if i < len(info.get('snippets', [])):
+                            st.divider()
+                else:
+                    st.info("No chunks retrieved for this query.")
+                
+                # Show performance stats
+                if info.get('latency'):
+                    st.divider()
+                    st.caption(f"**Performance:** Response: {info.get('latency', 0):.2f}s | Retrieval: {info.get('retrieval_time', 0):.2f}s")
+                    if info.get('used_refinement'):
+                        st.caption(f"**Refinement:** Applied (original: {info.get('original_word_count', 0)} words)")
+        
+        # Execution log
         with st.expander("📋 Execution Log", expanded=False):
             if st.session_state.execution_log:
                 # Add search/filter capability
@@ -918,7 +947,7 @@ def main():
     # Chat input
     raw_q = st.chat_input("Ask me anything about your property...")
     if raw_q:
-        # Clear execution log
+        # Clear execution log for new query
         st.session_state.execution_log = []
         log_execution("🎬 New Query Started", f"User asked: '{raw_q}'")
         
@@ -939,6 +968,22 @@ def main():
                     st.session_state.property_id
                 )
                 latency = time.time() - start
+                
+                # Store query info for sidebar display (always, not just in debug mode)
+                st.session_state.last_query_info = {
+                    "latency": latency,
+                    "retrieval_time": retrieval_time,
+                    "snippets": snippets,
+                    "chunk_idxs": chunk_idxs,
+                    "paths": paths,
+                    "similarities": similarities,
+                    "search_types": search_types,
+                    "used_refinement": used_refinement,
+                    "original_word_count": original_word_count,
+                    "enriched_query": enriched_q,
+                    "raw_query": raw_q
+                }
+                
             except Exception as e:
                 latency = time.time() - start
                 answer = "I apologize, but I encountered an error. Please try again."
@@ -946,6 +991,16 @@ def main():
                 retrieval_time = 0
                 used_refinement = False
                 original_word_count = 0
+                enriched_q = raw_q
+                
+                # Store minimal info even on error
+                st.session_state.last_query_info = {
+                    "latency": latency,
+                    "retrieval_time": 0,
+                    "snippets": [],
+                    "error": str(e),
+                    "raw_query": raw_q
+                }
         
         log_execution("🏁 Query Complete", f"Total time: {latency:.3f}s")
         
@@ -1015,54 +1070,18 @@ def main():
             
             assistant_logged = conversation_logger.log_message(st.session_state.conversation_id, "assistant", answer, assistant_message_data, st.session_state.property_id)
             log_execution("💾 Assistant Message Logged", f"Success: {assistant_logged}, Cost: ${cost:.4f}")
-        else:
-            if not st.session_state.conversation_id:
-                log_execution("⚠️ No Conversation ID", "Cannot log messages")
-            if not st.session_state.config.get('enable_conversation_logging', True):
-                log_execution("⚠️ Logging Disabled", "Conversation logging is turned off")
         
         # Log metrics with all performance data
         metrics = {
             "latency": latency,
             "retrieval_time": retrieval_time,
-            "sources_used": len(snippets),
-            "used_refinement": used_refinement,
-            "original_word_count": original_word_count,
+            "sources_used": len(snippets) if 'snippets' in locals() else 0,
+            "used_refinement": used_refinement if 'used_refinement' in locals() else False,
+            "original_word_count": original_word_count if 'original_word_count' in locals() else 0,
             "final_word_count": len(answer.split()),
-            "sources": [{"path": p, "similarity": s, "type": t} for p, s, t in zip(paths, similarities, search_types)] if snippets else []
+            "sources": [{"path": p, "similarity": s, "type": t} for p, s, t in zip(paths, similarities, search_types)] if 'snippets' in locals() and snippets else []
         }
         monitor.log_request(metrics)
-        
-        # Store debug info
-        if st.session_state.config.get('debug_mode'):
-            st.session_state.last_debug_info = {
-                "latency": latency,
-                "retrieval_time": retrieval_time,
-                "snippets": snippets,
-                "chunk_idxs": chunk_idxs if 'chunk_idxs' in locals() else [],
-                "paths": paths if 'paths' in locals() else [],
-                "similarities": similarities if 'similarities' in locals() else [],
-                "search_types": search_types if 'search_types' in locals() else [],
-                "used_refinement": used_refinement if 'used_refinement' in locals() else False,
-                "enriched_query": enriched_q if 'enriched_q' in locals() else raw_q,
-                "raw_query": raw_q
-            }
-        
-        # Always show Retrieved Chunks section in the sidebar after a query
-        if hasattr(st.session_state, 'last_debug_info'):
-            with st.sidebar.expander("📚 Retrieved Chunks (Similarity & Type)", expanded=True):
-                debug = st.session_state.last_debug_info
-                st.markdown(f"**Total chunks found:** {len(debug.get('snippets', []))}")
-                if debug.get('snippets'):
-                    for i, snippet in enumerate(debug.get('snippets', []), 1):
-                        stype = debug.get('search_types', ['unknown'])[i-1] if i-1 < len(debug.get('search_types', [])) else 'unknown'
-                        sim = debug.get('similarities', [0])[i-1] if i-1 < len(debug.get('similarities', [])) else 0
-                        st.markdown(f"**Chunk {i}:**")
-                        st.caption(f"Type: {'Cosine (semantic)' if stype == 'semantic' else 'Keyword'} | Similarity: {sim:.3f}")
-                        st.text_area(f"chunk_{i}_content", snippet, height=100, disabled=True, label_visibility="collapsed")
-                        st.divider()
-                else:
-                    st.info("No chunks retrieved for this query.")
 
 if __name__ == "__main__":
     main()
