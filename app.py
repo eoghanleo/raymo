@@ -14,6 +14,320 @@ import os
 from groq import Groq
 
 
+# ——— Conversation Logging ———
+class ConversationLogger:
+    """Handles logging of chat conversations to Snowflake."""
+    
+    def __init__(self, session: Session):
+        self.session = session
+        self.table_name = "CHAT_CONVERSATIONS"
+        self.messages_table = "CHAT_MESSAGES"
+        self._ensure_tables_exist()
+    
+    def _ensure_tables_exist(self):
+        """Create conversation logging tables if they don't exist."""
+        try:
+            # Create conversations table
+            conversations_sql = f"""
+            CREATE TABLE IF NOT EXISTS {self.table_name} (
+                CONVERSATION_ID VARCHAR(36) PRIMARY KEY,
+                PROPERTY_ID INTEGER NOT NULL,
+                SESSION_ID VARCHAR(36) NOT NULL,
+                START_TIME TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+                END_TIME TIMESTAMP_NTZ,
+                TOTAL_MESSAGES INTEGER DEFAULT 0,
+                USER_MESSAGE_COUNT INTEGER DEFAULT 0,
+                ASSISTANT_MESSAGE_COUNT INTEGER DEFAULT 0,
+                AVERAGE_RESPONSE_TIME FLOAT,
+                TOTAL_TOKENS_USED INTEGER DEFAULT 0,
+                TOTAL_COST FLOAT DEFAULT 0.0,
+                LLM_PROVIDER VARCHAR(20) DEFAULT 'GROQ',
+                STATUS VARCHAR(20) DEFAULT 'ACTIVE',
+                CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+                UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+            )
+            """
+            
+            # Create messages table
+            messages_sql = f"""
+            CREATE TABLE IF NOT EXISTS {self.messages_table} (
+                MESSAGE_ID VARCHAR(36) PRIMARY KEY,
+                CONVERSATION_ID VARCHAR(36) NOT NULL,
+                MESSAGE_ORDER INTEGER NOT NULL,
+                ROLE VARCHAR(20) NOT NULL, -- 'user' or 'assistant'
+                CONTENT TEXT NOT NULL,
+                ENRICHED_QUERY TEXT,
+                RETRIEVAL_TIME FLOAT,
+                LLM_RESPONSE_TIME FLOAT,
+                TOTAL_RESPONSE_TIME FLOAT,
+                TOKENS_USED INTEGER,
+                COST FLOAT DEFAULT 0.0,
+                SOURCES_USED INTEGER DEFAULT 0,
+                SIMILARITY_SCORES ARRAY,
+                SOURCE_PATHS ARRAY,
+                SEARCH_TYPES ARRAY,
+                USED_REFINEMENT BOOLEAN DEFAULT FALSE,
+                ORIGINAL_WORD_COUNT INTEGER,
+                FINAL_WORD_COUNT INTEGER,
+                LLM_PROVIDER VARCHAR(20),
+                ERROR_MESSAGE TEXT,
+                CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+                FOREIGN KEY (CONVERSATION_ID) REFERENCES {self.table_name}(CONVERSATION_ID)
+            )
+            """
+            
+            self.session.sql(conversations_sql).collect()
+            self.session.sql(messages_sql).collect()
+            
+        except Exception as e:
+            logging.error(f"Failed to create conversation tables: {e}")
+    
+    def start_conversation(self, property_id: int, session_id: str) -> str:
+        """Start a new conversation and return conversation ID."""
+        conversation_id = str(uuid.uuid4())
+        
+        insert_sql = f"""
+        INSERT INTO {self.table_name} (
+            CONVERSATION_ID, PROPERTY_ID, SESSION_ID, STATUS
+        ) VALUES (?, ?, ?, 'ACTIVE')
+        """
+        
+        try:
+            self.session.sql(insert_sql, params=[conversation_id, property_id, session_id]).collect()
+            return conversation_id
+        except Exception as e:
+            logging.error(f"Failed to start conversation: {e}")
+            return None
+    
+    def log_message(self, conversation_id: str, message_data: Dict[str, Any]) -> bool:
+        """Log a single message to the database."""
+        if not conversation_id:
+            return False
+            
+        message_id = str(uuid.uuid4())
+        
+        # Prepare arrays for Snowflake
+        similarity_scores = json.dumps(message_data.get('similarity_scores', []))
+        source_paths = json.dumps(message_data.get('source_paths', []))
+        search_types = json.dumps(message_data.get('search_types', []))
+        
+        insert_sql = f"""
+        INSERT INTO {self.messages_table} (
+            MESSAGE_ID, CONVERSATION_ID, MESSAGE_ORDER, ROLE, CONTENT,
+            ENRICHED_QUERY, RETRIEVAL_TIME, LLM_RESPONSE_TIME, TOTAL_RESPONSE_TIME,
+            TOKENS_USED, COST, SOURCES_USED, SIMILARITY_SCORES, SOURCE_PATHS,
+            SEARCH_TYPES, USED_REFINEMENT, ORIGINAL_WORD_COUNT, FINAL_WORD_COUNT,
+            LLM_PROVIDER, ERROR_MESSAGE
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        
+        try:
+            self.session.sql(insert_sql, params=[
+                message_id,
+                conversation_id,
+                message_data.get('message_order', 0),
+                message_data.get('role', 'user'),
+                message_data.get('content', ''),
+                message_data.get('enriched_query', ''),
+                message_data.get('retrieval_time', 0.0),
+                message_data.get('llm_response_time', 0.0),
+                message_data.get('total_response_time', 0.0),
+                message_data.get('tokens_used', 0),
+                message_data.get('cost', 0.0),
+                message_data.get('sources_used', 0),
+                similarity_scores,
+                source_paths,
+                search_types,
+                message_data.get('used_refinement', False),
+                message_data.get('original_word_count', 0),
+                message_data.get('final_word_count', 0),
+                message_data.get('llm_provider', 'GROQ'),
+                message_data.get('error_message', '')
+            ]).collect()
+            
+            # Update conversation summary
+            self._update_conversation_summary(conversation_id)
+            return True
+            
+        except Exception as e:
+            logging.error(f"Failed to log message: {e}")
+            return False
+    
+    def _update_conversation_summary(self, conversation_id: str):
+        """Update conversation summary statistics."""
+        update_sql = f"""
+        UPDATE {self.table_name} c
+        SET 
+            TOTAL_MESSAGES = (
+                SELECT COUNT(*) FROM {self.messages_table} m 
+                WHERE m.CONVERSATION_ID = c.CONVERSATION_ID
+            ),
+            USER_MESSAGE_COUNT = (
+                SELECT COUNT(*) FROM {self.messages_table} m 
+                WHERE m.CONVERSATION_ID = c.CONVERSATION_ID AND m.ROLE = 'user'
+            ),
+            ASSISTANT_MESSAGE_COUNT = (
+                SELECT COUNT(*) FROM {self.messages_table} m 
+                WHERE m.CONVERSATION_ID = c.CONVERSATION_ID AND m.ROLE = 'assistant'
+            ),
+            AVERAGE_RESPONSE_TIME = (
+                SELECT AVG(TOTAL_RESPONSE_TIME) FROM {self.messages_table} m 
+                WHERE m.CONVERSATION_ID = c.CONVERSATION_ID AND m.ROLE = 'assistant'
+            ),
+            TOTAL_TOKENS_USED = (
+                SELECT COALESCE(SUM(TOKENS_USED), 0) FROM {self.messages_table} m 
+                WHERE m.CONVERSATION_ID = c.CONVERSATION_ID
+            ),
+            TOTAL_COST = (
+                SELECT COALESCE(SUM(COST), 0.0) FROM {self.messages_table} m 
+                WHERE m.CONVERSATION_ID = c.CONVERSATION_ID
+            ),
+            UPDATED_AT = CURRENT_TIMESTAMP()
+        WHERE c.CONVERSATION_ID = ?
+        """
+        
+        try:
+            self.session.sql(update_sql, params=[conversation_id]).collect()
+        except Exception as e:
+            logging.error(f"Failed to update conversation summary: {e}")
+    
+    def end_conversation(self, conversation_id: str):
+        """Mark conversation as ended."""
+        if not conversation_id:
+            return
+            
+        update_sql = f"""
+        UPDATE {self.table_name}
+        SET END_TIME = CURRENT_TIMESTAMP(), STATUS = 'COMPLETED'
+        WHERE CONVERSATION_ID = ?
+        """
+        
+        try:
+            self.session.sql(update_sql, params=[conversation_id]).collect()
+        except Exception as e:
+            logging.error(f"Failed to end conversation: {e}")
+    
+    def get_conversation_history(self, property_id: int, limit: int = 10) -> List[Dict]:
+        """Get recent conversation history for a property."""
+        query_sql = f"""
+        SELECT 
+            c.CONVERSATION_ID,
+            c.SESSION_ID,
+            c.START_TIME,
+            c.END_TIME,
+            c.TOTAL_MESSAGES,
+            c.AVERAGE_RESPONSE_TIME,
+            c.TOTAL_COST,
+            c.LLM_PROVIDER,
+            c.STATUS
+        FROM {self.table_name} c
+        WHERE c.PROPERTY_ID = ?
+        ORDER BY c.START_TIME DESC
+        LIMIT ?
+        """
+        
+        try:
+            results = self.session.sql(query_sql, params=[property_id, limit]).collect()
+            return [dict(row) for row in results]
+        except Exception as e:
+            logging.error(f"Failed to get conversation history: {e}")
+            return []
+    
+    def get_conversation_messages(self, conversation_id: str) -> List[Dict]:
+        """Get all messages for a specific conversation."""
+        query_sql = f"""
+        SELECT 
+            MESSAGE_ORDER,
+            ROLE,
+            CONTENT,
+            ENRICHED_QUERY,
+            RETRIEVAL_TIME,
+            LLM_RESPONSE_TIME,
+            TOTAL_RESPONSE_TIME,
+            TOKENS_USED,
+            COST,
+            SOURCES_USED,
+            USED_REFINEMENT,
+            LLM_PROVIDER,
+            CREATED_AT
+        FROM {self.messages_table}
+        WHERE CONVERSATION_ID = ?
+        ORDER BY MESSAGE_ORDER
+        """
+        
+        try:
+            results = self.session.sql(query_sql, params=[conversation_id]).collect()
+            return [dict(row) for row in results]
+        except Exception as e:
+            logging.error(f"Failed to get conversation messages: {e}")
+            return []
+    
+    def cleanup_old_conversations(self, days_old: int = 30):
+        """Clean up conversations older than specified days."""
+        try:
+            cleanup_sql = f"""
+            DELETE FROM {self.messages_table} 
+            WHERE CONVERSATION_ID IN (
+                SELECT CONVERSATION_ID 
+                FROM {self.table_name} 
+                WHERE CREATED_AT < DATEADD(day, -?, CURRENT_TIMESTAMP())
+            )
+            """
+            
+            messages_deleted = self.session.sql(cleanup_sql, params=[days_old]).collect()
+            
+            cleanup_conversations_sql = f"""
+            DELETE FROM {self.table_name} 
+            WHERE CREATED_AT < DATEADD(day, -?, CURRENT_TIMESTAMP())
+            """
+            
+            conversations_deleted = self.session.sql(cleanup_conversations_sql, params=[days_old]).collect()
+            
+            return {
+                'messages_deleted': len(messages_deleted) if messages_deleted else 0,
+                'conversations_deleted': len(conversations_deleted) if conversations_deleted else 0
+            }
+            
+        except Exception as e:
+            logging.error(f"Failed to cleanup old conversations: {e}")
+            return {'messages_deleted': 0, 'conversations_deleted': 0}
+    
+    def get_conversation_stats(self, property_id: int = None) -> Dict[str, Any]:
+        """Get conversation statistics."""
+        try:
+            if property_id:
+                stats_sql = f"""
+                SELECT 
+                    COUNT(*) as total_conversations,
+                    AVG(TOTAL_MESSAGES) as avg_messages_per_conversation,
+                    AVG(AVERAGE_RESPONSE_TIME) as avg_response_time,
+                    SUM(TOTAL_COST) as total_cost,
+                    COUNT(CASE WHEN STATUS = 'ACTIVE' THEN 1 END) as active_conversations
+                FROM {self.table_name}
+                WHERE PROPERTY_ID = ?
+                """
+                results = self.session.sql(stats_sql, params=[property_id]).collect()
+            else:
+                stats_sql = f"""
+                SELECT 
+                    COUNT(*) as total_conversations,
+                    AVG(TOTAL_MESSAGES) as avg_messages_per_conversation,
+                    AVG(AVERAGE_RESPONSE_TIME) as avg_response_time,
+                    SUM(TOTAL_COST) as total_cost,
+                    COUNT(CASE WHEN STATUS = 'ACTIVE' THEN 1 END) as active_conversations
+                FROM {self.table_name}
+                """
+                results = self.session.sql(stats_sql).collect()
+            
+            if results:
+                return dict(results[0])
+            return {}
+            
+        except Exception as e:
+            logging.error(f"Failed to get conversation stats: {e}")
+            return {}
+
+
 # ——— App config ———
 st.set_page_config(
     page_title="Multi-Property RAG Chat", 
@@ -54,6 +368,14 @@ def get_session():
         return Session.builder.configs(connection_parameters).create()
 
 session = get_session()
+
+# ——— Initialize Conversation Logger ———
+@st.cache_resource
+def get_conversation_logger():
+    """Initialize conversation logger."""
+    return ConversationLogger(session)
+
+conversation_logger = get_conversation_logger()
 
 # ——— Constants ———
 MODEL_NAME = 'llama3-70b-8192'  # Updated Groq model name (without context size)
@@ -590,6 +912,10 @@ def main():
         st.session_state.chat_history = []
     if 'session_id' not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
+    if 'conversation_id' not in st.session_state:
+        st.session_state.conversation_id = None
+    if 'message_counter' not in st.session_state:
+        st.session_state.message_counter = 0
     
     # Sidebar
     with st.sidebar:
@@ -598,9 +924,15 @@ def main():
         # Property switcher
         if st.session_state.property_id:
             if st.button("🔄 Switch Property", type="secondary"):
+                # End current conversation
+                if st.session_state.conversation_id:
+                    conversation_logger.end_conversation(st.session_state.conversation_id)
+                
                 st.session_state.property_id = None
                 st.session_state.chat_history = []
                 st.session_state.session_id = str(uuid.uuid4())
+                st.session_state.conversation_id = None
+                st.session_state.message_counter = 0
                 st.rerun()
         
         # System settings (read-only)
@@ -634,17 +966,65 @@ def main():
                 st.session_state.config.get('debug_mode', False),
                 help="Show technical details"
             )
+            
+            # Conversation logging toggle
+            st.session_state.config['enable_conversation_logging'] = st.checkbox(
+                "💾 Log Conversations",
+                st.session_state.config.get('enable_conversation_logging', True),
+                help="Save conversations to Snowflake for analysis"
+            )
         
         # Action buttons
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🗑️ Clear Chat"):
+                # End current conversation
+                if st.session_state.conversation_id:
+                    conversation_logger.end_conversation(st.session_state.conversation_id)
+                
                 st.session_state.chat_history = []
+                st.session_state.message_counter = 0
                 st.rerun()
         with col2:
             if st.button("🗑️ Clear Logs"):
                 st.session_state.execution_log = []
                 st.rerun()
+        
+        # Export conversations button
+        if st.session_state.property_id:
+            if st.button("📊 Export Conversations", type="secondary", use_container_width=True):
+                # Get all conversations for the property
+                conversations = conversation_logger.get_conversation_history(st.session_state.property_id, limit=100)
+                
+                if conversations:
+                    # Create export data
+                    export_data = []
+                    for conv in conversations:
+                        messages = conversation_logger.get_conversation_messages(conv['CONVERSATION_ID'])
+                        conv_data = {
+                            'conversation_id': conv['CONVERSATION_ID'],
+                            'session_id': conv['SESSION_ID'],
+                            'start_time': conv['START_TIME'].isoformat() if conv['START_TIME'] else None,
+                            'end_time': conv['END_TIME'].isoformat() if conv['END_TIME'] else None,
+                            'total_messages': conv['TOTAL_MESSAGES'],
+                            'average_response_time': conv['AVERAGE_RESPONSE_TIME'],
+                            'total_cost': conv['TOTAL_COST'],
+                            'llm_provider': conv['LLM_PROVIDER'],
+                            'status': conv['STATUS'],
+                            'messages': messages
+                        }
+                        export_data.append(conv_data)
+                    
+                    # Convert to JSON for download
+                    json_data = json.dumps(export_data, indent=2, default=str)
+                    st.download_button(
+                        label="💾 Download JSON",
+                        data=json_data,
+                        file_name=f"property_{st.session_state.property_id}_conversations.json",
+                        mime="application/json"
+                    )
+                else:
+                    st.warning("No conversations to export.")
         
         # Performance metrics
         with st.expander("📈 Performance Metrics", expanded=True):
@@ -685,6 +1065,94 @@ def main():
                         st.caption(f"Steps: {total_steps} | Total time: {sum(timed_steps):.3f}s")
             else:
                 st.markdown("*No execution data yet. Ask a question to see the process!*")
+        
+        # Conversation History
+        with st.expander("💬 Conversation History", expanded=False):
+            if st.session_state.property_id:
+                # Get conversation history for current property
+                conversations = conversation_logger.get_conversation_history(st.session_state.property_id, limit=5)
+                
+                if conversations:
+                    st.markdown(f"**Recent conversations for Property #{st.session_state.property_id}:**")
+                    
+                    for conv in conversations:
+                        with st.container():
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                start_time = conv['START_TIME'].strftime("%m/%d %H:%M") if conv['START_TIME'] else "Unknown"
+                                status_emoji = "🟢" if conv['STATUS'] == 'ACTIVE' else "🔴"
+                                st.markdown(f"{status_emoji} **{start_time}** ({conv['TOTAL_MESSAGES']} messages)")
+                                
+                                if conv['AVERAGE_RESPONSE_TIME']:
+                                    st.caption(f"Avg response: {conv['AVERAGE_RESPONSE_TIME']:.2f}s")
+                                if conv['TOTAL_COST']:
+                                    st.caption(f"Cost: ${conv['TOTAL_COST']:.4f}")
+                            
+                            with col2:
+                                if st.button("📋", key=f"view_{conv['CONVERSATION_ID']}", help="View messages"):
+                                    st.session_state.viewing_conversation = conv['CONVERSATION_ID']
+                                    st.rerun()
+                            
+                            st.divider()
+                    
+                    # View specific conversation messages
+                    if hasattr(st.session_state, 'viewing_conversation') and st.session_state.viewing_conversation:
+                        st.markdown("### 📋 Conversation Messages")
+                        messages = conversation_logger.get_conversation_messages(st.session_state.viewing_conversation)
+                        
+                        if messages:
+                            for msg in messages:
+                                role_emoji = "🙋‍♂️" if msg['ROLE'] == 'user' else "🏠"
+                                st.markdown(f"{role_emoji} **{msg['ROLE'].title()}:**")
+                                st.markdown(f"*{msg['CONTENT'][:100]}{'...' if len(msg['CONTENT']) > 100 else ''}*")
+                                
+                                if msg['ROLE'] == 'assistant':
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.caption(f"⏱️ {msg['TOTAL_RESPONSE_TIME']:.2f}s")
+                                    with col2:
+                                        st.caption(f"📊 {msg['SOURCES_USED']} sources")
+                                    with col3:
+                                        st.caption(f"💰 ${msg['COST']:.4f}")
+                                
+                                st.divider()
+                        
+                        if st.button("❌ Close", key="close_conversation"):
+                            st.session_state.viewing_conversation = None
+                            st.rerun()
+                else:
+                    st.info("No previous conversations found for this property.")
+            else:
+                st.info("Select a property to view conversation history.")
+        
+        # Conversation Statistics
+        if st.session_state.property_id:
+            with st.expander("📊 Conversation Stats", expanded=False):
+                stats = conversation_logger.get_conversation_stats(st.session_state.property_id)
+                
+                if stats:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Total Conversations", stats.get('TOTAL_CONVERSATIONS', 0))
+                        st.metric("Active Conversations", stats.get('ACTIVE_CONVERSATIONS', 0))
+                    with col2:
+                        avg_messages = stats.get('AVG_MESSAGES_PER_CONVERSATION', 0)
+                        st.metric("Avg Messages/Conv", f"{avg_messages:.1f}" if avg_messages else "0")
+                        avg_response = stats.get('AVG_RESPONSE_TIME', 0)
+                        st.metric("Avg Response Time", f"{avg_response:.2f}s" if avg_response else "0s")
+                    
+                    total_cost = stats.get('TOTAL_COST', 0)
+                    if total_cost:
+                        st.metric("Total Cost", f"${total_cost:.4f}")
+                    
+                    # Cleanup button
+                    if st.button("🧹 Cleanup Old (>30 days)", type="secondary"):
+                        with st.spinner("Cleaning up old conversations..."):
+                            cleanup_result = conversation_logger.cleanup_old_conversations(30)
+                            st.success(f"Cleaned up {cleanup_result['conversations_deleted']} conversations and {cleanup_result['messages_deleted']} messages")
+                            st.rerun()
+                else:
+                    st.info("No conversation data available yet.")
     
     # Property selection
     if st.session_state.property_id is None:
@@ -702,6 +1170,11 @@ def main():
             )
             if st.button("🚀 Start Chat", type="primary", use_container_width=True):
                 st.session_state.property_id = prop_input
+                # Start new conversation
+                st.session_state.conversation_id = conversation_logger.start_conversation(
+                    prop_input, st.session_state.session_id
+                )
+                st.session_state.message_counter = 0
                 st.rerun()
         return
     
@@ -761,6 +1234,61 @@ def main():
         
         # Add to history
         st.session_state.chat_history.append({"role": "assistant", "content": answer})
+        
+        # Log conversation to Snowflake
+        if st.session_state.conversation_id and st.session_state.config.get('enable_conversation_logging', True):
+            # Calculate costs (approximate)
+            llm_provider = "GROQ" if st.session_state.config.get('use_groq', True) and groq_client else "CORTEX"
+            tokens_used = len(answer.split()) * 1.3  # Rough estimate
+            cost = tokens_used * 0.0000017 if llm_provider == "GROQ" else tokens_used * 0.0000375
+            
+            # Log user message
+            st.session_state.message_counter += 1
+            user_message_data = {
+                "message_order": st.session_state.message_counter,
+                "role": "user",
+                "content": raw_q,
+                "enriched_query": enriched_q if 'enriched_q' in locals() else raw_q,
+                "retrieval_time": 0.0,
+                "llm_response_time": 0.0,
+                "total_response_time": 0.0,
+                "tokens_used": 0,
+                "cost": 0.0,
+                "sources_used": 0,
+                "similarity_scores": [],
+                "source_paths": [],
+                "search_types": [],
+                "used_refinement": False,
+                "original_word_count": 0,
+                "final_word_count": len(raw_q.split()),
+                "llm_provider": llm_provider,
+                "error_message": ""
+            }
+            conversation_logger.log_message(st.session_state.conversation_id, user_message_data)
+            
+            # Log assistant response
+            st.session_state.message_counter += 1
+            assistant_message_data = {
+                "message_order": st.session_state.message_counter,
+                "role": "assistant",
+                "content": answer,
+                "enriched_query": enriched_q if 'enriched_q' in locals() else raw_q,
+                "retrieval_time": retrieval_time if 'retrieval_time' in locals() else 0.0,
+                "llm_response_time": latency - retrieval_time if 'retrieval_time' in locals() else latency,
+                "total_response_time": latency,
+                "tokens_used": int(tokens_used),
+                "cost": cost,
+                "sources_used": len(snippets) if 'snippets' in locals() else 0,
+                "similarity_scores": similarities if 'similarities' in locals() else [],
+                "source_paths": paths if 'paths' in locals() else [],
+                "search_types": search_types if 'search_types' in locals() else [],
+                "used_refinement": used_refinement if 'used_refinement' in locals() else False,
+                "original_word_count": original_word_count if 'original_word_count' in locals() else 0,
+                "final_word_count": len(answer.split()),
+                "llm_provider": llm_provider,
+                "error_message": ""
+            }
+            conversation_logger.log_message(st.session_state.conversation_id, assistant_message_data)
         
         # Log metrics with all performance data
         metrics = {
