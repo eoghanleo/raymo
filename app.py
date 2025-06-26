@@ -108,9 +108,15 @@ class ConversationLogger:
         message_id = str(uuid.uuid4())
         
         # Prepare arrays for Snowflake
-        similarity_scores = json.dumps(message_data.get('similarity_scores', []))
-        source_paths = json.dumps(message_data.get('source_paths', []))
-        search_types = json.dumps(message_data.get('search_types', []))
+        try:
+            similarity_scores = json.dumps(message_data.get('similarity_scores', []))
+            source_paths = json.dumps(message_data.get('source_paths', []))
+            search_types = json.dumps(message_data.get('search_types', []))
+        except Exception as e:
+            logging.error(f"Failed to serialize arrays: {e}")
+            similarity_scores = json.dumps([])
+            source_paths = json.dumps([])
+            search_types = json.dumps([])
         
         insert_sql = f"""
         INSERT INTO {self.messages_table} (
@@ -124,7 +130,10 @@ class ConversationLogger:
         
         try:
             logging.info(f"Attempting to log message {message_id} for conversation {conversation_id}")
-            result = self.session.sql(insert_sql, params=[
+            logging.info(f"Message data: {message_data}")
+            
+            # Prepare parameters
+            params = [
                 message_id,
                 conversation_id,
                 message_data.get('message_order', 0),
@@ -145,9 +154,14 @@ class ConversationLogger:
                 message_data.get('final_word_count', 0),
                 message_data.get('llm_provider', 'GROQ'),
                 message_data.get('error_message', '')
-            ]).collect()
+            ]
             
-            logging.info(f"Successfully logged message {message_id}")
+            logging.info(f"SQL: {insert_sql}")
+            logging.info(f"Params: {params}")
+            
+            result = self.session.sql(insert_sql, params=params).collect()
+            
+            logging.info(f"Successfully logged message {message_id}, result: {result}")
             
             # Update conversation summary
             self._update_conversation_summary(conversation_id)
@@ -155,6 +169,8 @@ class ConversationLogger:
             
         except Exception as e:
             logging.error(f"Failed to log message {message_id}: {e}")
+            logging.error(f"Exception type: {type(e)}")
+            logging.error(f"Exception args: {e.args}")
             return False
     
     def _update_conversation_summary(self, conversation_id: str):
@@ -363,6 +379,102 @@ class ConversationLogger:
                 "messages_table": False,
                 "conversations_count": 0,
                 "messages_count": 0
+            }
+
+    def test_message_insertion(self, conversation_id: str) -> Dict[str, Any]:
+        """Test inserting a simple message to debug database issues."""
+        try:
+            test_message_id = str(uuid.uuid4())
+            
+            # Simple test insert
+            test_sql = f"""
+            INSERT INTO {self.messages_table} (
+                MESSAGE_ID, CONVERSATION_ID, MESSAGE_ORDER, ROLE, CONTENT,
+                ENRICHED_QUERY, RETRIEVAL_TIME, LLM_RESPONSE_TIME, TOTAL_RESPONSE_TIME,
+                TOKENS_USED, COST, SOURCES_USED, SIMILARITY_SCORES, SOURCE_PATHS,
+                SEARCH_TYPES, USED_REFINEMENT, ORIGINAL_WORD_COUNT, FINAL_WORD_COUNT,
+                LLM_PROVIDER, ERROR_MESSAGE
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            
+            test_params = [
+                test_message_id,
+                conversation_id,
+                999,  # Test message order
+                'user',
+                'Test message content',
+                'Test enriched query',
+                0.0,
+                0.0,
+                0.0,
+                0,
+                0.0,
+                0,
+                json.dumps([]),
+                json.dumps([]),
+                json.dumps([]),
+                False,
+                0,
+                4,  # 4 words in test message
+                'TEST',
+                ''
+            ]
+            
+            logging.info(f"Testing message insertion with ID: {test_message_id}")
+            result = self.session.sql(test_sql, params=test_params).collect()
+            
+            # Check if message was actually inserted
+            check_sql = f"SELECT COUNT(*) as count FROM {self.messages_table} WHERE MESSAGE_ID = ?"
+            check_result = self.session.sql(check_sql, params=[test_message_id]).collect()
+            
+            message_exists = check_result[0].COUNT > 0 if check_result else False
+            
+            return {
+                "success": True,
+                "test_message_id": test_message_id,
+                "insert_result": result,
+                "message_exists": message_exists,
+                "check_result": check_result
+            }
+            
+        except Exception as e:
+            logging.error(f"Test message insertion failed: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+
+    def check_table_structure(self) -> Dict[str, Any]:
+        """Check the structure of the messages table."""
+        try:
+            # Get table description
+            desc_sql = f"DESCRIBE TABLE {self.messages_table}"
+            desc_result = self.session.sql(desc_sql).collect()
+            
+            # Get column information
+            columns = []
+            for row in desc_result:
+                columns.append({
+                    "name": row.name if hasattr(row, 'name') else row.NAME,
+                    "type": row.type if hasattr(row, 'type') else row.TYPE,
+                    "nullable": row.nullable if hasattr(row, 'nullable') else row.NULLABLE,
+                    "default": row.default if hasattr(row, 'default') else row.DEFAULT
+                })
+            
+            return {
+                "success": True,
+                "table_name": self.messages_table,
+                "columns": columns,
+                "column_count": len(columns)
+            }
+            
+        except Exception as e:
+            logging.error(f"Failed to check table structure: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "table_name": self.messages_table
             }
 
 
@@ -1219,6 +1331,40 @@ def main():
                                     st.success(f"✅ Conversation {st.session_state.conversation_id[:8]}... ended")
                                     st.session_state.conversation_id = None
                                     st.rerun()
+                            
+                            # Test message insertion
+                            st.markdown("**Test Message Insertion:**")
+                            if st.button("🧪 Test Message Insert"):
+                                with st.spinner("Testing message insertion..."):
+                                    test_result = conversation_logger.test_message_insertion(st.session_state.conversation_id)
+                                    
+                                    if test_result["success"]:
+                                        st.success("✅ Test message insertion successful")
+                                        st.markdown(f"**Test Message ID:** {test_result['test_message_id']}")
+                                        st.markdown(f"**Message Exists:** {'✅' if test_result['message_exists'] else '❌'}")
+                                        st.markdown(f"**Insert Result:** {test_result['insert_result']}")
+                                        st.markdown(f"**Check Result:** {test_result['check_result']}")
+                                    else:
+                                        st.error(f"❌ Test message insertion failed: {test_result['error']}")
+                                        st.markdown(f"**Error Type:** {test_result['error_type']}")
+                            
+                            # Check table structure
+                            st.markdown("**Table Structure Check:**")
+                            if st.button("📋 Check Table Structure"):
+                                with st.spinner("Checking table structure..."):
+                                    structure_result = conversation_logger.check_table_structure()
+                                    
+                                    if structure_result["success"]:
+                                        st.success("✅ Table structure check successful")
+                                        st.markdown(f"**Table:** {structure_result['table_name']}")
+                                        st.markdown(f"**Columns:** {structure_result['column_count']}")
+                                        
+                                        # Show column details
+                                        with st.expander("📋 Column Details"):
+                                            for col in structure_result['columns']:
+                                                st.markdown(f"**{col['name']}:** {col['type']} ({'NULL' if col['nullable'] else 'NOT NULL'})")
+                                    else:
+                                        st.error(f"❌ Table structure check failed: {structure_result['error']}")
                     else:
                         st.error(f"❌ Database connection failed: {test_result.get('error', 'Unknown error')}")
     
