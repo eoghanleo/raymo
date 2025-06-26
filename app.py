@@ -380,14 +380,14 @@ def process_question(raw_q: str, property_id: int, chat_history: list) -> str:
         # 1. Check for explicit reference patterns that indicate follow-up
         # Using simpler patterns that are more mobile-compatible
         explicit_patterns = [
-            r'\b(?:it|this|that)\s+(?:is|was|does|can|will|should|would)',  # "how does it work", "what is this"
-            r'\bwhat\s+about\s+(?:it|this|that|them)\b',  # "what about it"
-            r'\b(?:tell|explain|show)\s+me\s+more\b',  # "tell me more"
+            r'\b(it|this|that)\s+(is|was|does|can|will|should|would)',  # "how does it work", "what is this"
+            r'\bwhat\s+about\s+(it|this|that|them)\b',  # "what about it"
+            r'\b(tell|explain|show)\s+me\s+more\b',  # "tell me more"
             r'\belse\s+about\b',  # "what else about"
             r'\bthe\s+same\s+',  # "the same thing"
             r'\balso\b.*\?',  # questions with "also"
-            r'^(?:and|but|so)\s+',  # starts with conjunctions
-            r'\b(?:how|why|when|where)\s+do\s+(?:i|you)\s+(?:use|turn|activate|access)\s+(?:it|this|that|them)\b'  # specific action questions
+            r'^(and|but|so)\s+',  # starts with conjunctions
+            r'\b(how|why|when|where)\s+do\s+(i|you)\s+(use|turn|activate|access)\s+(it|this|that|them)\b'  # specific action questions
         ]
         
         has_explicit_reference = any(re.search(pattern, raw_lower) for pattern in explicit_patterns)
