@@ -107,10 +107,10 @@ class ConversationLogger:
             
         message_id = str(uuid.uuid4())
         
-        # Prepare arrays for Snowflake (pass as Python lists, not JSON strings)
-        similarity_scores = message_data.get('similarity_scores', [])
-        source_paths = message_data.get('source_paths', [])
-        search_types = message_data.get('search_types', [])
+        # Prepare arrays for Snowflake: use JSON strings and PARSE_JSON(?) in SQL
+        similarity_scores = json.dumps(message_data.get('similarity_scores', []))
+        source_paths = json.dumps(message_data.get('source_paths', []))
+        search_types = json.dumps(message_data.get('search_types', []))
         
         insert_sql = f"""
         INSERT INTO {self.messages_table} (
@@ -119,7 +119,7 @@ class ConversationLogger:
             TOKENS_USED, COST, SOURCES_USED, SIMILARITY_SCORES, SOURCE_PATHS,
             SEARCH_TYPES, USED_REFINEMENT, ORIGINAL_WORD_COUNT, FINAL_WORD_COUNT,
             LLM_PROVIDER, ERROR_MESSAGE
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, PARSE_JSON(?), PARSE_JSON(?), PARSE_JSON(?), ?, ?, ?, ?, ?)
         """
         
         try:
@@ -421,7 +421,7 @@ class ConversationLogger:
                 TOKENS_USED, COST, SOURCES_USED, SIMILARITY_SCORES, SOURCE_PATHS,
                 SEARCH_TYPES, USED_REFINEMENT, ORIGINAL_WORD_COUNT, FINAL_WORD_COUNT,
                 LLM_PROVIDER, ERROR_MESSAGE
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, PARSE_JSON(?), PARSE_JSON(?), PARSE_JSON(?), ?, ?, ?, ?, ?)
             """
             
             test_params = [
@@ -437,9 +437,9 @@ class ConversationLogger:
                 0,
                 0.0,
                 0,
-                [],  # ARRAY columns as Python lists
-                [],
-                [],
+                json.dumps([]),  # ARRAY columns as JSON strings
+                json.dumps([]),
+                json.dumps([]),
                 False,
                 0,
                 4,  # 4 words in test message
