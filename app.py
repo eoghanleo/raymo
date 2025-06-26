@@ -80,7 +80,7 @@ class ConversationLogger:
         insert_sql = f"""
         INSERT INTO {self.messages_table} (
             MESSAGE_ID, CONVERSATION_ID, MESSAGE_ORDER, ROLE, CONTENT, METADATA
-        ) VALUES (?, ?, ?, ?, ?, ?)
+        ) SELECT ?, ?, ?, ?, ?, PARSE_JSON(?)
         """
         try:
             params = [
