@@ -1084,86 +1084,20 @@ def main():
                 "raw_query": raw_q
             }
     
-    # Enhanced debug info with retrieved chunks - MOVED TO SIDEBAR
+    # Retrieved Chunks Debug Info
     if st.session_state.config.get('debug_mode') and hasattr(st.session_state, 'last_debug_info'):
-        with st.sidebar.expander("🔍 Last Query Debug - Detailed View", expanded=True):
+        with st.sidebar.expander("🔍 Retrieved Chunks", expanded=True):
             debug = st.session_state.last_debug_info
-            
-            # Query info
-            st.markdown("### 📝 Query Analysis")
-            st.markdown(f"**Original:** {debug.get('raw_query', 'N/A')}")
-            st.markdown(f"**Enriched:** {debug.get('enriched_query', 'N/A')}")
-            
-            # Performance summary
-            st.markdown("### ⚡ Performance")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total Time", f"{debug['latency']:.2f}s")
-                st.metric("Retrieval", f"{debug['retrieval_time']:.2f}s")
-            with col2:
-                st.metric("LLM Time", f"{debug['latency'] - debug['retrieval_time']:.2f}s")
-                st.metric("Refinement", "Yes" if debug['used_refinement'] else "No")
-            
-            # Retrieved chunks detail
-            st.markdown("### 📚 Retrieved Chunks")
             st.markdown(f"**Total chunks found:** {len(debug.get('snippets', []))}")
-            
             if debug.get('snippets'):
                 for i, snippet in enumerate(debug.get('snippets', []), 1):
-                    # Get corresponding metadata
-                    path = debug.get('paths', ['Unknown'])[i-1] if i-1 < len(debug.get('paths', [])) else 'Unknown'
-                    sim = debug.get('similarities', [0])[i-1] if i-1 < len(debug.get('similarities', [])) else 0
                     stype = debug.get('search_types', ['unknown'])[i-1] if i-1 < len(debug.get('search_types', [])) else 'unknown'
-                    idx = debug.get('chunk_idxs', [0])[i-1] if i-1 < len(debug.get('chunk_idxs', [])) else 0
-                    
-                    # Chunk header with colored background
-                    st.markdown(f"#### 📄 Chunk {i}: {stype.upper()}")
-                    
-                    # Chunk metadata in columns
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.caption(f"📂 Source: {path}")
-                        st.caption(f"📍 Index: {idx}")
-                    with col2:
-                        st.caption(f"📊 Score: {sim:.3f}")
-                        st.caption(f"🔍 Type: {stype}")
-                    
-                    # Why was it retrieved?
-                    if stype == 'semantic':
-                        st.info(f"✨ Retrieved via semantic similarity (cosine similarity: {sim:.3f})")
-                    else:
-                        st.info(f"🔤 Retrieved via keyword match (fixed score: {sim:.3f})")
-                    
-                    # Chunk content
-                    st.markdown("**Content:**")
-                    st.text_area(f"chunk_{i}_content", snippet, height=150, disabled=True, label_visibility="collapsed")
-                    
-                    # Additional insights
-                    word_count = len(snippet.split())
-                    st.caption(f"📏 Length: {word_count} words, {len(snippet)} characters")
-                    
-                    # Separator between chunks
-                    if i < len(debug.get('snippets', [])):
-                        st.divider()
-                
-                # Show keywords used for keyword search
-                if any(st == 'keyword' for st in debug.get('search_types', [])):
+                    sim = debug.get('similarities', [0])[i-1] if i-1 < len(debug.get('similarities', [])) else 0
+                    st.markdown(f"**Chunk {i} ({stype}):** Similarity: {sim:.3f}")
+                    st.text_area(f"chunk_{i}_content", snippet, height=100, disabled=True, label_visibility="collapsed")
                     st.divider()
-                    st.markdown("### 🔤 Keyword Extraction")
-                    # Extract keywords from enriched query with same logic as retrieval
-                    stop_words = {'guest', 'inquiry', 'property', 'discussing', 'context'}
-                    tokens = re.findall(r'\b\w{4,}\b', debug.get('enriched_query', '').lower())
-                    keywords = []
-                    seen = set()
-                    for token in tokens:
-                        if token not in stop_words and token not in seen:
-                            keywords.append(token)
-                            seen.add(token)
-                            if len(keywords) >= 5:
-                                break
-                    st.markdown(f"**Keywords used:** {', '.join(keywords) if keywords else 'None'}")
             else:
-                st.warning("No chunks retrieved for this query")
+                st.info("No chunks retrieved for this query.")
 
 if __name__ == "__main__":
     main()
