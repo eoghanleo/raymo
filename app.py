@@ -957,35 +957,6 @@ def main():
             else:
                 st.info("Select a property to view conversation history.")
         
-        # Conversation Statistics
-        if st.session_state.property_id:
-            with st.expander("📊 Conversation Stats", expanded=False):
-                stats = conversation_logger.get_conversation_stats(st.session_state.property_id)
-                
-                if stats:
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Total Conversations", stats.get('TOTAL_CONVERSATIONS', 0))
-                        st.metric("Active Conversations", stats.get('ACTIVE_CONVERSATIONS', 0))
-                    with col2:
-                        avg_messages = stats.get('AVG_MESSAGES_PER_CONVERSATION', 0)
-                        st.metric("Avg Messages/Conv", f"{avg_messages:.1f}" if avg_messages else "0")
-                        avg_response = stats.get('AVG_RESPONSE_TIME', 0)
-                        st.metric("Avg Response Time", f"{avg_response:.2f}s" if avg_response else "0s")
-                    
-                    total_cost = stats.get('TOTAL_COST', 0)
-                    if total_cost:
-                        st.metric("Total Cost", f"${total_cost:.4f}")
-                    
-                    # Cleanup button
-                    if st.button("🧹 Cleanup Old (>30 days)", type="secondary"):
-                        with st.spinner("Cleaning up old conversations..."):
-                            cleanup_result = conversation_logger.cleanup_old_conversations(30)
-                            st.success(f"Cleaned up {cleanup_result['conversations_deleted']} conversations and {cleanup_result['messages_deleted']} messages")
-                            st.rerun()
-                else:
-                    st.info("No conversation data available yet.")
-        
         # Database Test (for debugging)
         with st.expander("🔧 Database Test", expanded=False):
             if st.button("🧪 Test Database Connection"):
