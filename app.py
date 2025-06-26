@@ -41,6 +41,7 @@ class ConversationLogger:
             CREATE TABLE IF NOT EXISTS {self.messages_table} (
                 MESSAGE_ID VARCHAR PRIMARY KEY,
                 CONVERSATION_ID VARCHAR,
+                PROPERTY_ID INTEGER,
                 MESSAGE_ORDER INTEGER,
                 ROLE VARCHAR,
                 CONTENT TEXT,
@@ -66,7 +67,7 @@ class ConversationLogger:
         except Exception:
             return None
 
-    def log_message(self, conversation_id: str, role: str, content: str, metadata: dict = None) -> bool:
+    def log_message(self, conversation_id: str, role: str, content: str, metadata: dict = None, property_id: int = None) -> bool:
         if not conversation_id:
             return False
         message_id = str(uuid.uuid4())
@@ -79,13 +80,14 @@ class ConversationLogger:
             message_order = 1
         insert_sql = f"""
         INSERT INTO {self.messages_table} (
-            MESSAGE_ID, CONVERSATION_ID, MESSAGE_ORDER, ROLE, CONTENT, METADATA
-        ) SELECT ?, ?, ?, ?, ?, PARSE_JSON(?)
+            MESSAGE_ID, CONVERSATION_ID, PROPERTY_ID, MESSAGE_ORDER, ROLE, CONTENT, METADATA
+        ) SELECT ?, ?, ?, ?, ?, ?, PARSE_JSON(?)
         """
         try:
             params = [
                 message_id,
                 conversation_id,
+                property_id,
                 message_order,
                 role,
                 content,
@@ -145,6 +147,7 @@ class ConversationLogger:
             MESSAGE_ORDER,
             ROLE,
             CONTENT,
+            PROPERTY_ID,
             METADATA,
             CREATED_AT
         FROM {self.messages_table}
@@ -160,6 +163,7 @@ class ConversationLogger:
                     "MESSAGE_ORDER": getattr(row, "MESSAGE_ORDER", None),
                     "ROLE": getattr(row, "ROLE", None),
                     "CONTENT": getattr(row, "CONTENT", None),
+                    "PROPERTY_ID": getattr(row, "PROPERTY_ID", None),
                     "METADATA": getattr(row, "METADATA", None),
                     "CREATED_AT": getattr(row, "CREATED_AT", None)
                 }
@@ -905,124 +909,6 @@ def main():
                         st.caption(f"Steps: {total_steps} | Total time: {sum(timed_steps):.3f}s")
             else:
                 st.markdown("*No execution data yet. Ask a question to see the process!*")
-        
-        # Conversation History
-        with st.expander("💬 Conversation History", expanded=False):
-            if st.session_state.property_id:
-                # Get conversation history for current property
-                conversations = conversation_logger.get_conversation_history(st.session_state.property_id, limit=5)
-                
-                if conversations:
-                    st.markdown(f"**Recent conversations for Property #{st.session_state.property_id}:**")
-                    
-                    for conv in conversations:
-                        with st.container():
-                            col1, col2 = st.columns([3, 1])
-                            with col1:
-                                start_time = conv['START_TIME'].strftime("%m/%d %H:%M") if conv['START_TIME'] else "Unknown"
-                                status_emoji = "🟢" if conv['STATUS'] == 'ACTIVE' else "🔴"
-                                st.markdown(f"{status_emoji} **{start_time}** ({len(conversation_logger.get_conversation_messages(conv['CONVERSATION_ID']))} messages)")
-                            
-                            with col2:
-                                if st.button("📋", key=f"view_{conv['CONVERSATION_ID']}", help="View messages"):
-                                    st.session_state.viewing_conversation = conv['CONVERSATION_ID']
-                                    st.rerun()
-                            
-                            st.divider()
-                    
-                    # View specific conversation messages
-                    if hasattr(st.session_state, 'viewing_conversation') and st.session_state.viewing_conversation:
-                        st.markdown("### 📋 Conversation Messages")
-                        messages = conversation_logger.get_conversation_messages(st.session_state.viewing_conversation)
-                        
-                        if messages:
-                            for msg in messages:
-                                role_emoji = "🙋‍♂️" if msg['ROLE'] == 'user' else "🏠"
-                                st.markdown(f"{role_emoji} **{msg['ROLE'].title()}:**")
-                                st.markdown(f"*{msg['CONTENT'][:100]}{'...' if len(msg['CONTENT']) > 100 else ''}*")
-                                
-                                if msg['ROLE'] == 'assistant':
-                                    col1, col2, col3 = st.columns(3)
-                                    with col1:
-                                        st.caption(f"⏱️ {msg['METADATA'].get('total_response_time', 'N/A')}s")
-                                    with col2:
-                                        st.caption(f"📊 {msg['METADATA'].get('sources_used', 0)} sources")
-                                    with col3:
-                                        st.caption(f"💰 ${msg['METADATA'].get('cost', 0.0):.4f}")
-                                
-                                st.divider()
-                        
-                        if st.button("❌ Close", key="close_conversation"):
-                            st.session_state.viewing_conversation = None
-                            st.rerun()
-                else:
-                    st.info("No previous conversations found for this property.")
-            else:
-                st.info("Select a property to view conversation history.")
-        
-        # Database Test (for debugging)
-        with st.expander("🔧 Database Test", expanded=False):
-            if st.button("🧪 Test Database Connection"):
-                with st.spinner("Testing database connection..."):
-                    test_result = conversation_logger.test_connection()
-                    
-                    if test_result["connection"] == "OK":
-                        st.success("✅ Database connection successful")
-                        st.markdown(f"**Test time:** {test_result['test_time']}")
-                        st.markdown(f"**Conversations table:** {'✅' if test_result['conversations_table'] else '❌'}")
-                        st.markdown(f"**Messages table:** {'✅' if test_result['messages_table'] else '❌'}")
-                        st.markdown(f"**Conversations count:** {test_result['conversations_count']}")
-                        st.markdown(f"**Messages count:** {test_result['messages_count']}")
-                        
-                        if not test_result['conversations_table'] or not test_result['messages_table']:
-                            st.error("❌ Tables not found. Check table creation.")
-                        
-                        # Manual conversation end test
-                        if st.session_state.conversation_id:
-                            st.divider()
-                            st.markdown("**Manual Conversation End Test:**")
-                            if st.button("🔚 End Current Conversation"):
-                                with st.spinner("Ending conversation..."):
-                                    conversation_logger.end_conversation(st.session_state.conversation_id)
-                                    st.success(f"✅ Conversation {st.session_state.conversation_id[:8]}... ended")
-                                    st.session_state.conversation_id = None
-                                    st.rerun()
-                            
-                            # Test message insertion
-                            st.markdown("**Test Message Insertion:**")
-                            if st.button("🧪 Test Message Insert"):
-                                with st.spinner("Testing message insertion..."):
-                                    test_result = conversation_logger.test_message_insertion(st.session_state.conversation_id)
-                                    
-                                    if test_result["success"]:
-                                        st.success("✅ Test message insertion successful")
-                                        st.markdown(f"**Test Message ID:** {test_result['test_message_id']}")
-                                        st.markdown(f"**Message Exists:** {'✅' if test_result['message_exists'] else '❌'}")
-                                        st.markdown(f"**Insert Result:** {test_result['insert_result']}")
-                                        st.markdown(f"**Check Result:** {test_result['check_result']}")
-                                    else:
-                                        st.error(f"❌ Test message insertion failed: {test_result['error']}")
-                                        st.markdown(f"**Error Type:** {test_result['error_type']}")
-                            
-                            # Check table structure
-                            st.markdown("**Table Structure Check:**")
-                            if st.button("📋 Check Table Structure"):
-                                with st.spinner("Checking table structure..."):
-                                    structure_result = conversation_logger.check_table_structure()
-                                    
-                                    if structure_result["success"]:
-                                        st.success("✅ Table structure check successful")
-                                        st.markdown(f"**Table:** {structure_result['table_name']}")
-                                        st.markdown(f"**Columns:** {structure_result['column_count']}")
-                                        
-                                        # Show column details
-                                        with st.expander("📋 Column Details"):
-                                            for col in structure_result['columns']:
-                                                st.markdown(f"**{col['name']}:** {col['type']} ({'NULL' if col['nullable'] else 'NOT NULL'})")
-                                    else:
-                                        st.error(f"❌ Table structure check failed: {structure_result['error']}")
-                    else:
-                        st.error(f"❌ Database connection failed: {test_result.get('error', 'Unknown error')}")
     
     # Property selection
     if st.session_state.property_id is None:
@@ -1137,7 +1023,7 @@ def main():
                 "error_message": ""
             }
             
-            user_logged = conversation_logger.log_message(st.session_state.conversation_id, "user", raw_q, user_message_data)
+            user_logged = conversation_logger.log_message(st.session_state.conversation_id, "user", raw_q, user_message_data, st.session_state.property_id)
             log_execution("💾 User Message Logged", f"Success: {user_logged}")
             
             # Log assistant response
@@ -1163,7 +1049,7 @@ def main():
                 "error_message": ""
             }
             
-            assistant_logged = conversation_logger.log_message(st.session_state.conversation_id, "assistant", answer, assistant_message_data)
+            assistant_logged = conversation_logger.log_message(st.session_state.conversation_id, "assistant", answer, assistant_message_data, st.session_state.property_id)
             log_execution("💾 Assistant Message Logged", f"Success: {assistant_logged}, Cost: ${cost:.4f}")
         else:
             if not st.session_state.conversation_id:
