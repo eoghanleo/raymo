@@ -102,6 +102,7 @@ class ConversationLogger:
     def log_message(self, conversation_id: str, message_data: Dict[str, Any]) -> bool:
         """Log a single message to the database."""
         if not conversation_id:
+            logging.error("No conversation_id provided for message logging")
             return False
             
         message_id = str(uuid.uuid4())
@@ -122,7 +123,8 @@ class ConversationLogger:
         """
         
         try:
-            self.session.sql(insert_sql, params=[
+            logging.info(f"Attempting to log message {message_id} for conversation {conversation_id}")
+            result = self.session.sql(insert_sql, params=[
                 message_id,
                 conversation_id,
                 message_data.get('message_order', 0),
@@ -145,12 +147,14 @@ class ConversationLogger:
                 message_data.get('error_message', '')
             ]).collect()
             
+            logging.info(f"Successfully logged message {message_id}")
+            
             # Update conversation summary
             self._update_conversation_summary(conversation_id)
             return True
             
         except Exception as e:
-            logging.error(f"Failed to log message: {e}")
+            logging.error(f"Failed to log message {message_id}: {e}")
             return False
     
     def _update_conversation_summary(self, conversation_id: str):
@@ -326,6 +330,40 @@ class ConversationLogger:
         except Exception as e:
             logging.error(f"Failed to get conversation stats: {e}")
             return {}
+
+    def test_connection(self) -> Dict[str, Any]:
+        """Test database connection and table creation."""
+        try:
+            # Test basic connection
+            test_sql = "SELECT CURRENT_TIMESTAMP() as test_time"
+            result = self.session.sql(test_sql).collect()
+            
+            # Test table existence
+            conversations_exist = self.session.sql(f"SHOW TABLES LIKE '{self.table_name}'").collect()
+            messages_exist = self.session.sql(f"SHOW TABLES LIKE '{self.messages_table}'").collect()
+            
+            # Test table structure
+            conversations_count = self.session.sql(f"SELECT COUNT(*) as count FROM {self.table_name}").collect()
+            messages_count = self.session.sql(f"SELECT COUNT(*) as count FROM {self.messages_table}").collect()
+            
+            return {
+                "connection": "OK",
+                "test_time": result[0].TEST_TIME if result else None,
+                "conversations_table": len(conversations_exist) > 0,
+                "messages_table": len(messages_exist) > 0,
+                "conversations_count": conversations_count[0].COUNT if conversations_count else 0,
+                "messages_count": messages_count[0].COUNT if messages_count else 0
+            }
+            
+        except Exception as e:
+            return {
+                "connection": "ERROR",
+                "error": str(e),
+                "conversations_table": False,
+                "messages_table": False,
+                "conversations_count": 0,
+                "messages_count": 0
+            }
 
 
 # ——— App config ———
@@ -1153,6 +1191,36 @@ def main():
                             st.rerun()
                 else:
                     st.info("No conversation data available yet.")
+        
+        # Database Test (for debugging)
+        with st.expander("🔧 Database Test", expanded=False):
+            if st.button("🧪 Test Database Connection"):
+                with st.spinner("Testing database connection..."):
+                    test_result = conversation_logger.test_connection()
+                    
+                    if test_result["connection"] == "OK":
+                        st.success("✅ Database connection successful")
+                        st.markdown(f"**Test time:** {test_result['test_time']}")
+                        st.markdown(f"**Conversations table:** {'✅' if test_result['conversations_table'] else '❌'}")
+                        st.markdown(f"**Messages table:** {'✅' if test_result['messages_table'] else '❌'}")
+                        st.markdown(f"**Conversations count:** {test_result['conversations_count']}")
+                        st.markdown(f"**Messages count:** {test_result['messages_count']}")
+                        
+                        if not test_result['conversations_table'] or not test_result['messages_table']:
+                            st.error("❌ Tables not found. Check table creation.")
+                    
+                    # Manual conversation end test
+                    if st.session_state.conversation_id:
+                        st.divider()
+                        st.markdown("**Manual Conversation End Test:**")
+                        if st.button("🔚 End Current Conversation"):
+                            with st.spinner("Ending conversation..."):
+                                conversation_logger.end_conversation(st.session_state.conversation_id)
+                                st.success(f"✅ Conversation {st.session_state.conversation_id[:8]}... ended")
+                                st.session_state.conversation_id = None
+                                st.rerun()
+                else:
+                    st.error(f"❌ Database connection failed: {test_result.get('error', 'Unknown error')}")
     
     # Property selection
     if st.session_state.property_id is None:
@@ -1237,6 +1305,8 @@ def main():
         
         # Log conversation to Snowflake
         if st.session_state.conversation_id and st.session_state.config.get('enable_conversation_logging', True):
+            log_execution("💾 Starting Conversation Logging", f"Conversation ID: {st.session_state.conversation_id}")
+            
             # Calculate costs (approximate)
             llm_provider = "GROQ" if st.session_state.config.get('use_groq', True) and groq_client else "CORTEX"
             tokens_used = len(answer.split()) * 1.3  # Rough estimate
@@ -1264,7 +1334,9 @@ def main():
                 "llm_provider": llm_provider,
                 "error_message": ""
             }
-            conversation_logger.log_message(st.session_state.conversation_id, user_message_data)
+            
+            user_logged = conversation_logger.log_message(st.session_state.conversation_id, user_message_data)
+            log_execution("💾 User Message Logged", f"Success: {user_logged}")
             
             # Log assistant response
             st.session_state.message_counter += 1
@@ -1288,7 +1360,14 @@ def main():
                 "llm_provider": llm_provider,
                 "error_message": ""
             }
-            conversation_logger.log_message(st.session_state.conversation_id, assistant_message_data)
+            
+            assistant_logged = conversation_logger.log_message(st.session_state.conversation_id, assistant_message_data)
+            log_execution("💾 Assistant Message Logged", f"Success: {assistant_logged}, Cost: ${cost:.4f}")
+        else:
+            if not st.session_state.conversation_id:
+                log_execution("⚠️ No Conversation ID", "Cannot log messages")
+            if not st.session_state.config.get('enable_conversation_logging', True):
+                log_execution("⚠️ Logging Disabled", "Conversation logging is turned off")
         
         # Log metrics with all performance data
         metrics = {
