@@ -107,16 +107,10 @@ class ConversationLogger:
             
         message_id = str(uuid.uuid4())
         
-        # Prepare arrays for Snowflake
-        try:
-            similarity_scores = json.dumps(message_data.get('similarity_scores', []))
-            source_paths = json.dumps(message_data.get('source_paths', []))
-            search_types = json.dumps(message_data.get('search_types', []))
-        except Exception as e:
-            logging.error(f"Failed to serialize arrays: {e}")
-            similarity_scores = json.dumps([])
-            source_paths = json.dumps([])
-            search_types = json.dumps([])
+        # Prepare arrays for Snowflake (pass as Python lists, not JSON strings)
+        similarity_scores = message_data.get('similarity_scores', [])
+        source_paths = message_data.get('source_paths', [])
+        search_types = message_data.get('search_types', [])
         
         insert_sql = f"""
         INSERT INTO {self.messages_table} (
@@ -443,9 +437,9 @@ class ConversationLogger:
                 0,
                 0.0,
                 0,
-                json.dumps([]),
-                json.dumps([]),
-                json.dumps([]),
+                [],  # ARRAY columns as Python lists
+                [],
+                [],
                 False,
                 0,
                 4,  # 4 words in test message
