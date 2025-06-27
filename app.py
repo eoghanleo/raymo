@@ -235,8 +235,7 @@ if 'config' not in st.session_state:
     st.session_state.config = {
         'max_response_words': 100,
         'context_window': 4,
-        'enable_logging': True,
-        'enable_refinement': True
+        'enable_logging': True
     }
 
 # ——— Performance Monitor ———
@@ -655,83 +654,12 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         
         log_execution("🤖 LLM Response", f"{word_count} words", stage1_time)
         
-        # Refinement if needed
-        used_refinement = False
-        final_response = initial_response
-        
-        if st.session_state.config['enable_refinement'] and word_count > WORD_THRESHOLD:
-            log_execution("✂️ Starting Refinement", f"Words: {word_count} > threshold: {WORD_THRESHOLD}")
-            refine_start = time.time()
-            used_refinement = True
-            final_response = refine_response(initial_response, raw_question)
-            refine_time = time.time() - refine_start
-            log_execution("✅ Refinement Complete", f"Final: {len(final_response.split())} words", refine_time)
-        
-        return (enriched_q, final_response, snippets, chunk_idxs, paths, 
-                similarities, search_types, used_refinement, word_count, retrieval_time)
+        return (enriched_q, initial_response, snippets, chunk_idxs, paths, 
+                similarities, search_types, False, word_count, retrieval_time)
         
     except Exception as e:
         log_execution("❌ Generation Error", str(e))
         return raw_question, "I'm experiencing technical difficulties. Please try again.", [], [], [], [], [], False, 0, 0
-
-# ——— Response Refinement ———
-def refine_response(original_response: str, original_question: str) -> str:
-    """Refine overly long responses."""
-    try:
-        use_groq = st.session_state.config.get('use_groq', True)
-        if use_groq and groq_client:
-            try:
-                # Groq refinement
-                messages = [
-                    {"role": "system", "content": "You are an editor. Make responses more concise while keeping all facts. Keep warm, friendly tone. Maximum 50 words unless more detail is essential."},
-                    {"role": "user", "content": f"Question: {original_question}\n\nResponse to refine: {original_response}\n\nRefined response:"}
-                ]
-                
-                completion = groq_client.chat.completions.create(
-                    model=MODEL_NAME,  # Use Groq model, not fallback
-                    messages=messages,
-                    temperature=0.3,
-                    max_tokens=100,
-                    stream=False
-                )
-                
-                return completion.choices[0].message.content.strip()
-                
-            except Exception as e:
-                log_execution("⚠️ Groq refinement failed, using Cortex", str(e))
-                # Fall through to Cortex - DO NOT retry with different model
-        
-        # Cortex refinement (either as fallback or primary)
-        refinement_prompt = (
-            EDITOR_PROMPT + "\n\n" +
-            f"Question: {original_question}\n" +
-            f"Response to refine: {original_response}\n" +
-            "Refined response:"
-        )
-        
-        # Switch to CORTEX_WH only for LLM generation
-        session.sql("USE WAREHOUSE CORTEX_WH").collect()
-        
-        df = session.sql(
-            "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
-            params=[FALLBACK_MODEL, refinement_prompt]
-        ).collect()
-        
-        refined = df[0].RESPONSE.strip() if df else original_response
-        
-        # Switch back to RETRIEVAL warehouse
-        session.sql("USE WAREHOUSE RETRIEVAL").collect()
-        
-        return refined
-        
-    except Exception as e:
-        log_execution("❌ Refinement Error", str(e))
-        # Ensure we're back on RETRIEVAL warehouse
-        try:
-            session.sql("USE WAREHOUSE RETRIEVAL").collect()
-        except:
-            pass
-        return original_response
 
 # ——— Content Sanitization ———
 def sanitize_for_markdown(content: str) -> str:
@@ -897,8 +825,6 @@ def main():
                 if info.get('latency'):
                     st.text("---")
                     st.text(f"Performance: Response: {info.get('latency', 0):.2f}s | Retrieval: {info.get('retrieval_time', 0):.2f}s")
-                    if info.get('used_refinement'):
-                        st.text(f"Refinement: Applied (original: {info.get('original_word_count', 0)} words)")
         
         # Execution log
         with st.expander("📋 Execution Log", expanded=False):
@@ -932,23 +858,20 @@ def main():
         st.text("🏠 Welcome to Property Assistant")
         st.text("Please select your property to get started")
         
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            prop_input = st.number_input(
-                "Enter your Property ID", 
-                min_value=1, 
-                max_value=100, 
-                value=1, 
-                step=1
+        prop_input_text = st.text_input("Property ID", value="1")
+        try:
+            prop_input = int(prop_input_text) if prop_input_text else 1
+        except ValueError:
+            prop_input = 1
+            
+        if st.button("Start Chat"):
+            st.session_state.property_id = prop_input
+            # Start new conversation
+            st.session_state.conversation_id = conversation_logger.start_conversation(
+                prop_input, st.session_state.session_id
             )
-            if st.button("🚀 Start Chat", type="primary", use_container_width=True):
-                st.session_state.property_id = prop_input
-                # Start new conversation
-                st.session_state.conversation_id = conversation_logger.start_conversation(
-                    prop_input, st.session_state.session_id
-                )
-                st.session_state.message_counter = 0
-                st.rerun()
+            st.session_state.message_counter = 0
+            st.rerun()
         return
     
     # Main chat interface
@@ -988,7 +911,7 @@ def main():
             start = time.time()
             try:
                 (enriched_q, answer, snippets, chunk_idxs, paths, similarities, 
-                 search_types, used_refinement, original_word_count, retrieval_time) = get_enhanced_answer(
+                 search_types, used_refinement, word_count, retrieval_time) = get_enhanced_answer(
                     st.session_state.chat_history[:-1],
                     raw_q,
                     st.session_state.property_id
@@ -1005,7 +928,7 @@ def main():
                     "similarities": similarities,
                     "search_types": search_types,
                     "used_refinement": used_refinement,
-                    "original_word_count": original_word_count,
+                    "original_word_count": word_count,
                     "enriched_query": enriched_q,
                     "raw_query": raw_q
                 }
@@ -1015,8 +938,6 @@ def main():
                 answer = "I apologize, but I encountered an error. Please try again."
                 snippets = []
                 retrieval_time = 0
-                used_refinement = False
-                original_word_count = 0
                 enriched_q = raw_q
                 
                 # Store minimal info even on error
@@ -1061,8 +982,6 @@ def main():
                 "similarity_scores": [],
                 "source_paths": [],
                 "search_types": [],
-                "used_refinement": False,
-                "original_word_count": 0,
                 "final_word_count": len(raw_q.split()),
                 "llm_provider": llm_provider,
                 "error_message": ""
@@ -1087,8 +1006,6 @@ def main():
                 "similarity_scores": similarities if 'similarities' in locals() else [],
                 "source_paths": paths if 'paths' in locals() else [],
                 "search_types": search_types if 'search_types' in locals() else [],
-                "used_refinement": used_refinement if 'used_refinement' in locals() else False,
-                "original_word_count": original_word_count if 'original_word_count' in locals() else 0,
                 "final_word_count": len(answer.split()),
                 "llm_provider": llm_provider,
                 "error_message": ""
@@ -1102,8 +1019,6 @@ def main():
             "latency": latency,
             "retrieval_time": retrieval_time,
             "sources_used": len(snippets) if 'snippets' in locals() else 0,
-            "used_refinement": used_refinement if 'used_refinement' in locals() else False,
-            "original_word_count": original_word_count if 'original_word_count' in locals() else 0,
             "final_word_count": len(answer.split()),
             "sources": [{"path": p, "similarity": s, "type": t} for p, s, t in zip(paths, similarities, search_types)] if 'snippets' in locals() and snippets else []
         }
