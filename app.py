@@ -788,7 +788,7 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.header("📊 System Information")
+        st.text("📊 System Information")
         
         # Property switcher
         if st.session_state.property_id:
@@ -807,7 +807,7 @@ def main():
         
         # System settings (read-only)
         with st.expander("⚙️ System Configuration", expanded=False):
-            st.info("Configuration is optimized for performance")
+            st.text("Configuration is optimized for performance")
             st.text(f"Retrieved chunks: {TOP_K}")
             st.text(f"Similarity threshold: {SIMILARITY_THRESHOLD}")
             st.text(f"Refinement threshold: {WORD_THRESHOLD} words")
@@ -823,12 +823,12 @@ def main():
             
             # LLM Status
             if use_groq and groq_client:
-                st.success("✅ Using Groq - $0.0017/query")
+                st.text("✅ Using Groq - $0.0017/query")
             elif not groq_client:
-                st.error("❌ Groq API key not found")
-                st.warning("💰 Using Snowflake Cortex - $0.0375/query")
+                st.text("❌ Groq API key not found")
+                st.text("💰 Using Snowflake Cortex - $0.0375/query")
             else:
-                st.info("💰 Using Snowflake Cortex - $0.0375/query")
+                st.text("💰 Using Snowflake Cortex - $0.0375/query")
             
             # Conversation logging toggle
             st.session_state.config['enable_conversation_logging'] = st.checkbox(
@@ -858,14 +858,14 @@ def main():
         with st.expander("📈 Performance Metrics", expanded=True):
             metrics = monitor.get_dashboard_metrics()
             if metrics.get('status') == 'No data yet':
-                st.info("Start chatting to see metrics!")
+                st.text("Start chatting to see metrics!")
             else:
                 st.metric("Avg Response Time", f"{metrics['avg_response_time']:.2f}s")
                 st.metric("Avg Retrieval Time", f"{metrics['avg_retrieval_time']:.2f}s")
                 st.metric("Refinement Rate", f"{metrics['refinement_rate']*100:.1f}%")
                 st.metric("Total Requests", metrics['total_requests'])
                 if metrics['recent_errors'] > 0:
-                    st.warning(f"⚠️ {metrics['recent_errors']} recent errors")
+                    st.text(f"⚠️ {metrics['recent_errors']} recent errors")
         
         # Retrieved Chunks - Always visible after a query
         if st.session_state.last_query_info:
@@ -884,21 +884,21 @@ def main():
                         path = info.get('paths', [''])[i-1] if i-1 < len(info.get('paths', [])) else ''
                         
                         st.text(f"Chunk {i}:")
-                        st.caption(f"Type: {'Cosine (semantic)' if stype == 'semantic' else 'Keyword'} | Similarity: {sim:.3f}")
+                        st.text(f"Type: {'Cosine (semantic)' if stype == 'semantic' else 'Keyword'} | Similarity: {sim:.3f}")
                         if path:
-                            st.caption(f"Source: {path}")
+                            st.text(f"Source: {path}")
                         st.text_area(f"chunk_{i}_content", snippet, height=100, disabled=True, label_visibility="collapsed")
                         if i < len(info.get('snippets', [])):
-                            st.divider()
+                            st.text("---")
                 else:
-                    st.info("No chunks retrieved for this query.")
+                    st.text("No chunks retrieved for this query.")
                 
                 # Show performance stats
                 if info.get('latency'):
-                    st.divider()
-                    st.caption(f"**Performance:** Response: {info.get('latency', 0):.2f}s | Retrieval: {info.get('retrieval_time', 0):.2f}s")
+                    st.text("---")
+                    st.text(f"Performance: Response: {info.get('latency', 0):.2f}s | Retrieval: {info.get('retrieval_time', 0):.2f}s")
                     if info.get('used_refinement'):
-                        st.caption(f"**Refinement:** Applied (original: {info.get('original_word_count', 0)} words)")
+                        st.text(f"Refinement: Applied (original: {info.get('original_word_count', 0)} words)")
         
         # Execution log
         with st.expander("📋 Execution Log", expanded=False):
@@ -919,17 +919,17 @@ def main():
                 
                 # Summary stats at the bottom
                 if filtered_logs:
-                    st.divider()
+                    st.text("---")
                     total_steps = len(filtered_logs)
                     timed_steps = [float(log['timing'][:-1]) for log in filtered_logs if log['timing']]
                     if timed_steps:
-                        st.caption(f"Steps: {total_steps} | Total time: {sum(timed_steps):.3f}s")
+                        st.text(f"Steps: {total_steps} | Total time: {sum(timed_steps):.3f}s")
             else:
                 st.text("No execution data yet. Ask a question to see the process!")
     
     # Property selection
     if st.session_state.property_id is None:
-        st.title("🏠 Welcome to Property Assistant")
+        st.text("🏠 Welcome to Property Assistant")
         st.text("Please select your property to get started")
         
         col1, col2, col3 = st.columns([1, 2, 1])
@@ -952,8 +952,8 @@ def main():
         return
     
     # Main chat interface
-    st.title(f"🏡 Property #{st.session_state.property_id} Assistant")
-    st.caption(f"Session: {st.session_state.session_id[:8]}...")
+    st.text(f"🏡 Property #{st.session_state.property_id} Assistant")
+    st.text(f"Session: {st.session_state.session_id[:8]}...")
     
     # Welcome message
     if not st.session_state.chat_history:
