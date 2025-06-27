@@ -765,9 +765,9 @@ def stream_response(response: str, placeholder):
     for i, word in enumerate(words):
         streamed.append(word)
         if i < len(words) - 1:
-            placeholder.markdown(sanitize_for_markdown(' '.join(streamed)) + " ▌")
+            placeholder.text(' '.join(streamed) + " ▌")
         else:
-            placeholder.markdown(sanitize_for_markdown(' '.join(streamed)))
+            placeholder.text(' '.join(streamed))
         time.sleep(0.02)
 
 # ——— Main App ———
@@ -871,11 +871,11 @@ def main():
         if st.session_state.last_query_info:
             with st.expander("📚 Retrieved Chunks (Similarity & Type)", expanded=True):
                 info = st.session_state.last_query_info
-                st.markdown(f"**Total chunks found:** {len(info.get('snippets', []))}")
+                st.text(f"Total chunks found: {len(info.get('snippets', []))}")
                 
                 # Show enriched query
                 if info.get('enriched_query') != info.get('raw_query'):
-                    st.info(f"**Enriched Query:** {sanitize_for_markdown(info.get('enriched_query', ''))}")
+                    st.text(f"Enriched Query: {info.get('enriched_query', '')}")
                 
                 if info.get('snippets'):
                     for i, snippet in enumerate(info.get('snippets', []), 1):
@@ -883,10 +883,10 @@ def main():
                         sim = info.get('similarities', [0])[i-1] if i-1 < len(info.get('similarities', [])) else 0
                         path = info.get('paths', [''])[i-1] if i-1 < len(info.get('paths', [])) else ''
                         
-                        st.markdown(f"**Chunk {i}:**")
+                        st.text(f"Chunk {i}:")
                         st.caption(f"Type: {'Cosine (semantic)' if stype == 'semantic' else 'Keyword'} | Similarity: {sim:.3f}")
                         if path:
-                            st.caption(f"Source: {sanitize_for_markdown(path)}")
+                            st.caption(f"Source: {path}")
                         st.text_area(f"chunk_{i}_content", snippet, height=100, disabled=True, label_visibility="collapsed")
                         if i < len(info.get('snippets', [])):
                             st.divider()
@@ -913,9 +913,9 @@ def main():
                 # Show last 20 entries, newest first
                 for log_entry in reversed(filtered_logs[-20:]):
                     timing_info = f" ({log_entry['timing']})" if log_entry['timing'] else ""
-                    st.markdown(f"**{log_entry['timestamp']}** {sanitize_for_markdown(log_entry['step'])}{timing_info}")
+                    st.text(f"{log_entry['timestamp']} {log_entry['step']}{timing_info}")
                     if log_entry['details']:
-                        st.markdown(f"  ↳ {sanitize_for_markdown(log_entry['details'])}")
+                        st.text(f"  ↳ {log_entry['details']}")
                 
                 # Summary stats at the bottom
                 if filtered_logs:
@@ -925,12 +925,12 @@ def main():
                     if timed_steps:
                         st.caption(f"Steps: {total_steps} | Total time: {sum(timed_steps):.3f}s")
             else:
-                st.markdown("*No execution data yet. Ask a question to see the process!*")
+                st.text("No execution data yet. Ask a question to see the process!")
     
     # Property selection
     if st.session_state.property_id is None:
         st.title("🏠 Welcome to Property Assistant")
-        st.markdown("### Please select your property to get started")
+        st.text("Please select your property to get started")
         
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
@@ -966,7 +966,8 @@ def main():
     # Display chat history
     for msg in st.session_state.chat_history:
         avatar = "🙋‍♂️" if msg['role'] == 'user' else "🏠"
-        st.chat_message(msg['role'], avatar=avatar).write(msg['content'])
+        with st.chat_message(msg['role'], avatar=avatar):
+            st.text(msg['content'])
 
     # Chat input
     raw_q = st.chat_input("Ask me anything about your property...")
@@ -977,7 +978,8 @@ def main():
         
         # Add user message
         st.session_state.chat_history.append({"role": "user", "content": raw_q})
-        st.chat_message("user", avatar="🙋‍♂️").write(raw_q)
+        with st.chat_message("user", avatar="🙋‍♂️"):
+            st.text(raw_q)
         
         # Generate response
         response_placeholder = st.chat_message("assistant", avatar="🏠").empty()
