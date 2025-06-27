@@ -671,6 +671,40 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         log_execution("❌ Generation Error", str(e))
         return raw_question, "I'm experiencing technical difficulties. Please try again.", [], [], [], [], [], False, 0, 0
 
+# ——— Response Formatting ———
+def format_response_with_markdown(response: str) -> str:
+    """Format LLM response with proper markdown formatting including bullet points and indentation."""
+    if not response:
+        return response
+    
+    # Split response into sentences
+    sentences = response.split('. ')
+    
+    # If response is short (1-2 sentences), return as is
+    if len(sentences) <= 2:
+        return response
+    
+    # For longer responses, format with bullet points
+    formatted_parts = []
+    
+    # First sentence as introduction
+    if sentences:
+        formatted_parts.append(sentences[0].strip())
+        sentences = sentences[1:]
+    
+    # Format remaining sentences as bullet points
+    if sentences:
+        formatted_parts.append("")  # Add spacing
+        for sentence in sentences:
+            if sentence.strip():
+                # Clean up the sentence
+                clean_sentence = sentence.strip()
+                if not clean_sentence.endswith('.'):
+                    clean_sentence += '.'
+                formatted_parts.append(f"• {clean_sentence}")
+    
+    return '\n'.join(formatted_parts)
+
 # ——— Stream Response ———
 def stream_response(response: str, placeholder):
     """Simulate streaming for better UX."""
@@ -878,7 +912,12 @@ def main():
     for msg in st.session_state.chat_history:
         avatar = "🙋‍♂️" if msg['role'] == 'user' else "🏠"
         with st.chat_message(msg['role'], avatar=avatar):
-            st.markdown(msg['content'])
+            if msg['role'] == 'assistant':
+                # Format assistant messages with markdown
+                st.markdown(format_response_with_markdown(msg['content']))
+            else:
+                # User messages stay as plain text
+                st.markdown(msg['content'])
 
     # Chat input
     raw_q = st.chat_input("Ask me anything about your property...")
@@ -940,10 +979,11 @@ def main():
         log_execution("🏁 Query Complete", f"Total time: {latency:.3f}s")
         
         # Stream response
-        stream_response(answer, response_placeholder)
+        formatted_answer = format_response_with_markdown(answer)
+        stream_response(formatted_answer, response_placeholder)
         
         # Add to history
-        st.session_state.chat_history.append({"role": "assistant", "content": answer})
+        st.session_state.chat_history.append({"role": "assistant", "content": formatted_answer})
         
         # Log conversation to Snowflake
         if st.session_state.conversation_id and st.session_state.config.get('enable_conversation_logging', True):
